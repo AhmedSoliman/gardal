@@ -7,7 +7,7 @@ authors = ["Ahmed Farghal <me@asoli.dev>"]
 rust-version = "1.87.0"                              # MSRV
 repository = "https://github.com/AhmedSoliman/gardal"
 categories = ["asynchronous", "concurrency", "network-programming"]
-readme = "../README.md"
+readme = "README.md"
 
 [features]
 default = []
