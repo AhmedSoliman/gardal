@@ -1,10 +1,10 @@
 use std::time::Duration;
 
-use gardal::{RateLimit, RawTokenBucket};
+use gardal::{RateLimit, TokenBucket};
 use nonzero_ext::nonzero;
 
 fn main() {
-    let tb = RawTokenBucket::new(RateLimit::per_second_and_burst(
+    let tb = TokenBucket::new(RateLimit::per_second_and_burst(
         nonzero!(10u32),
         nonzero!(20u32),
     ));

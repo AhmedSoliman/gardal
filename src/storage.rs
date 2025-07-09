@@ -3,7 +3,7 @@ mod cache_padded;
 pub mod local;
 pub mod padded_atomic;
 
-/// Storage policy abstraction used by [`RawTokenBucket`].
+/// Storage abstraction used by [`TokenBucket`].
 ///
 /// Implementations can provide either atomic or non-atomic access to the
 /// underlying timestamp depending on the desired level of concurrency.

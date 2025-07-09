@@ -12,20 +12,20 @@ use crate::{Clock, RateLimit, StdClock, Tokens};
 
 /// Dynamic token bucket using pluggable storage strategy
 #[derive(Clone)]
-pub struct RawTokenBucket<S = PaddedAtomicStorage, C = StdClock> {
+pub struct TokenBucket<S = PaddedAtomicStorage, C = StdClock> {
     bucket: TokenBucketStorage<S>,
     clock: C,
     limit: RateLimit,
 }
 
-impl RawTokenBucket<AtomicStorage, StdClock> {
+impl TokenBucket<AtomicStorage, StdClock> {
     /// Create a token bucket with a fixed rate and burst size using the given storage policy.
     pub fn new(limit: RateLimit) -> Self {
-        RawTokenBucket::<AtomicStorage>::from_parts(limit, StdClock::default())
+        TokenBucket::<AtomicStorage>::from_parts(limit, StdClock::default())
     }
 }
 
-impl<C: Clock> RawTokenBucket<PaddedAtomicStorage, C> {
+impl<C: Clock> TokenBucket<PaddedAtomicStorage, C> {
     /// Create a token bucket with a fixed rate and burst size using the given clock implementation
     pub fn with_clock(limit: RateLimit, clock: C) -> Self {
         let storage = PaddedAtomicStorage::new(clock.now());
@@ -37,7 +37,7 @@ impl<C: Clock> RawTokenBucket<PaddedAtomicStorage, C> {
     }
 }
 
-impl<S: TimeStorage, C: Clock> RawTokenBucket<S, C> {
+impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
     /// Create a token bucket with a fixed rate and burst size using the given clock implementation
     pub fn from_parts(limit: RateLimit, clock: C) -> Self {
         // let storage = S::new(clock.now());
@@ -245,7 +245,7 @@ mod tests {
         let clock = Arc::new(ManualClock::default());
         // initially, the bucket is empty
         let limit = RateLimit::per_second_and_burst(nonzero!(10u32), nonzero!(20u32));
-        let tb = RawTokenBucket::<PaddedAtomicStorage, _>::with_clock(limit, Arc::clone(&clock));
+        let tb = TokenBucket::<PaddedAtomicStorage, _>::with_clock(limit, Arc::clone(&clock));
         // initially empty
         assert!(tb.consume(nonzero!(1u32)).is_none());
         // one seconds later, the bucket is filled up by 10 tokens/s with burst capacity of 20
@@ -273,8 +273,7 @@ mod tests {
         let clock = Arc::new(ManualClock::default());
         // initially, the bucket is empty
         let limit = RateLimit::per_second_and_burst(nonzero!(10u32), nonzero!(20u32));
-        let mut tb =
-            RawTokenBucket::<PaddedAtomicStorage, _>::with_clock(limit, Arc::clone(&clock));
+        let mut tb = TokenBucket::<PaddedAtomicStorage, _>::with_clock(limit, Arc::clone(&clock));
         // initially empty
         assert!(tb.consume(nonzero!(1u32)).is_none());
         // one seconds later, the bucket is filled up by 10 tokens/s with burst capacity of 20
@@ -301,7 +300,7 @@ mod tests {
         let clock = Arc::new(ManualClock::default());
         // initially, the bucket is empty
         let limit = RateLimit::per_minute(nonzero!(30u32)).with_burst(nonzero!(20u32));
-        let tb = RawTokenBucket::<PaddedAtomicStorage, _>::with_clock(limit, Arc::clone(&clock));
+        let tb = TokenBucket::<PaddedAtomicStorage, _>::with_clock(limit, Arc::clone(&clock));
         // initially empty
         assert!(tb.consume(nonzero!(1u32)).is_none());
         // two seconds later
@@ -330,7 +329,7 @@ mod tests {
     fn saturating_consume() {
         let clock = Arc::new(ManualClock::default());
         let limit = RateLimit::per_second_and_burst(nonzero!(5u32), nonzero!(10u32));
-        let tb = RawTokenBucket::<PaddedAtomicStorage, _>::with_clock(limit, Arc::clone(&clock));
+        let tb = TokenBucket::<PaddedAtomicStorage, _>::with_clock(limit, Arc::clone(&clock));
         clock.set(1.0);
         // after one second, we have 5 tokens available, so that's what we can consume, but we can
         // use saturating consume when requesting more than we can
@@ -348,7 +347,7 @@ mod tests {
     fn wait_to_consume() {
         let clock = Arc::new(ManualClock::default());
         let limit = RateLimit::per_minute(nonzero!(30u32)).with_burst(nonzero!(10u32));
-        let tb = RawTokenBucket::<PaddedAtomicStorage, _>::with_clock(limit, Arc::clone(&clock));
+        let tb = TokenBucket::<PaddedAtomicStorage, _>::with_clock(limit, Arc::clone(&clock));
         // at t=0 bucket empty; borrow 5 tokens should require waiting for 10.0 seconds. Note that
         // we didn't consume anything as a result.
         match tb.try_consume(nonzero!(5u32)) {
@@ -365,7 +364,7 @@ mod tests {
     fn borrow_future() {
         let clock = Arc::new(ManualClock::default());
         let limit = RateLimit::per_minute(nonzero!(30u32)).with_burst(nonzero!(10u32));
-        let tb = RawTokenBucket::<PaddedAtomicStorage, _>::with_clock(limit, Arc::clone(&clock));
+        let tb = TokenBucket::<PaddedAtomicStorage, _>::with_clock(limit, Arc::clone(&clock));
         // at t=0 bucket empty; borrow 5 tokens should require waiting for 10.0 seconds
         let maybe_wait = tb.consume_with_borrow(nonzero!(5u32));
         assert_eq!(10.0, maybe_wait.unwrap().unwrap().as_secs_f64());
@@ -416,7 +415,7 @@ mod tests {
         // shared with arc and atomic (owned)
         let clock = Arc::new(ManualClock::default());
         let limit = RateLimit::per_second_and_burst(nonzero!(1000u32), nonzero!(10_000u32));
-        let tb = RawTokenBucket::<PaddedAtomicStorage, _>::with_clock(limit, Arc::clone(&clock));
+        let tb = TokenBucket::<PaddedAtomicStorage, _>::with_clock(limit, Arc::clone(&clock));
         clock.set(10.0);
         let tb = std::sync::Arc::new(tb);
         std::thread::scope(|s| {
@@ -440,7 +439,7 @@ mod tests {
         // shared with atomic (reference)
         let clock = Arc::new(ManualClock::default());
         let limit = RateLimit::per_second_and_burst(nonzero!(1000u32), nonzero!(10_000u32));
-        let tb = RawTokenBucket::<PaddedAtomicStorage, _>::with_clock(limit, Arc::clone(&clock));
+        let tb = TokenBucket::<PaddedAtomicStorage, _>::with_clock(limit, Arc::clone(&clock));
         std::thread::scope(|s| {
             clock.set(10.0);
             // 4 threads, each consuming 2000 tokens, bursting to 8000 out of the 10k burst

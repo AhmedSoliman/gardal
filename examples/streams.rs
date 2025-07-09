@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use futures::{StreamExt, stream};
 use gardal::futures::RateLimitedStreamExt;
-use gardal::{AtomicSharedStorage, FastClock, RateLimit, RawTokenBucket};
+use gardal::{AtomicSharedStorage, FastClock, RateLimit, TokenBucket};
 use nonzero_ext::nonzero;
 use tokio::task::JoinSet;
 
@@ -15,7 +15,7 @@ async fn main() {
     let clock = FastClock::new(clock);
 
     let limit = RateLimit::per_second_and_burst(nonzero!(5u32), nonzero!(5u32));
-    let bucket = RawTokenBucket::<AtomicSharedStorage, _>::from_parts(limit, clock);
+    let bucket = TokenBucket::<AtomicSharedStorage, _>::from_parts(limit, clock);
 
     let start = tokio::time::Instant::now();
     let mut handles = JoinSet::new();

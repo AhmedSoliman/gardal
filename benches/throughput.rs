@@ -4,7 +4,7 @@ use std::time::Duration;
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use gardal::{
     AtomicStorage, FastClock, LocalStorage, ManualClock, PaddedAtomicStorage, QuantaClock,
-    RateLimit, RawTokenBucket, StdClock,
+    RateLimit, TokenBucket, StdClock,
 };
 use nonzero_ext::nonzero;
 
@@ -16,10 +16,10 @@ fn bench_consume(c: &mut Criterion) {
         .unwrap();
     let clock = FastClock::new(clock);
     let quanta_tb =
-        RawTokenBucket::<PaddedAtomicStorage, _>::from_parts(limit, QuantaClock::default());
-    let std_tb = RawTokenBucket::<PaddedAtomicStorage, _>::from_parts(limit, StdClock::default());
-    let fast_tb = RawTokenBucket::<LocalStorage, _>::from_parts(limit, clock.clone());
-    let fast_tb_padded = RawTokenBucket::<PaddedAtomicStorage, _>::from_parts(limit, clock.clone());
+        TokenBucket::<PaddedAtomicStorage, _>::from_parts(limit, QuantaClock::default());
+    let std_tb = TokenBucket::<PaddedAtomicStorage, _>::from_parts(limit, StdClock::default());
+    let fast_tb = TokenBucket::<LocalStorage, _>::from_parts(limit, clock.clone());
+    let fast_tb_padded = TokenBucket::<PaddedAtomicStorage, _>::from_parts(limit, clock.clone());
     std::thread::sleep(Duration::from_secs(1));
     let mut group = c.benchmark_group("tokenbucket");
     group
@@ -27,7 +27,7 @@ fn bench_consume(c: &mut Criterion) {
         .sample_size(100)
         .bench_function("consume-mock-clock-local-storage", |b| {
             let clock = ManualClock::default();
-            let tb = RawTokenBucket::<LocalStorage, _>::from_parts(limit, &clock);
+            let tb = TokenBucket::<LocalStorage, _>::from_parts(limit, &clock);
             clock.set(10.0);
             b.iter(|| {
                 let _x = std::hint::black_box(tb.try_consume_one());
@@ -35,7 +35,7 @@ fn bench_consume(c: &mut Criterion) {
         })
         .bench_function("consume-mock-clock-atomic-storage", |b| {
             let clock = ManualClock::default();
-            let tb = RawTokenBucket::<AtomicStorage, _>::from_parts(limit, &clock);
+            let tb = TokenBucket::<AtomicStorage, _>::from_parts(limit, &clock);
             clock.set(10.0);
             b.iter(|| {
                 tb.consume_one();
@@ -43,7 +43,7 @@ fn bench_consume(c: &mut Criterion) {
         })
         .bench_function("consume-mock-clock-padded-atomic-storage", |b| {
             let clock = ManualClock::default();
-            let tb = RawTokenBucket::<PaddedAtomicStorage, _>::from_parts(limit, &clock);
+            let tb = TokenBucket::<PaddedAtomicStorage, _>::from_parts(limit, &clock);
             clock.set(10.0);
             b.iter(|| {
                 tb.consume_one();
@@ -85,7 +85,7 @@ fn multi_threaded(c: &mut Criterion) {
     group
         .throughput(Throughput::Elements(1))
         .bench_function("padded", |b| {
-            let tb = Arc::new(RawTokenBucket::<PaddedAtomicStorage, _>::from_parts(
+            let tb = Arc::new(TokenBucket::<PaddedAtomicStorage, _>::from_parts(
                 limit,
                 clock.clone(),
             ));
@@ -108,7 +108,7 @@ fn multi_threaded(c: &mut Criterion) {
             })
         })
         .bench_function("atomic", |b| {
-            let tb = Arc::new(RawTokenBucket::<AtomicStorage, _>::from_parts(
+            let tb = Arc::new(TokenBucket::<AtomicStorage, _>::from_parts(
                 limit,
                 clock.clone(),
             ));
@@ -144,7 +144,7 @@ fn multi_threaded2(c: &mut Criterion) {
         .throughput(Throughput::Elements(1))
         .bench_function("padded", |b| {
             b.iter_custom(|iters| {
-                let tb = Arc::new(RawTokenBucket::<PaddedAtomicStorage, _>::from_parts(
+                let tb = Arc::new(TokenBucket::<PaddedAtomicStorage, _>::from_parts(
                     limit,
                     clock.clone(),
                 ));
@@ -166,7 +166,7 @@ fn multi_threaded2(c: &mut Criterion) {
         })
         .bench_function("atomic", |b| {
             b.iter_custom(|iters| {
-                let tb = Arc::new(RawTokenBucket::<AtomicStorage, _>::from_parts(
+                let tb = Arc::new(TokenBucket::<AtomicStorage, _>::from_parts(
                     limit,
                     clock.clone(),
                 ));

@@ -9,7 +9,7 @@ use pin_project_lite::pin_project;
 use super::timer::{Sleep, sleep};
 use crate::RateLimit;
 use crate::storage::TimeStorage;
-use crate::{clock::Clock, raw::RawTokenBucket};
+use crate::{clock::Clock, bucket::TokenBucket};
 #[cfg(not(feature = "tokio-hrtime"))]
 use tokio::time::Instant;
 
@@ -23,7 +23,7 @@ pin_project! {
     {
         #[pin]
         stream: S,
-        bucket: RawTokenBucket<ST, C>,
+        bucket: TokenBucket<ST, C>,
         #[pin]
         delay: Option<Sleep>,
         ready_to_consume: bool,
@@ -37,7 +37,7 @@ where
     C: Clock,
 {
     /// Creates a new throttled stream.
-    pub fn new(stream: S, bucket: RawTokenBucket<ST, C>) -> Self {
+    pub fn new(stream: S, bucket: TokenBucket<ST, C>) -> Self {
         Self {
             stream,
             bucket,
@@ -54,11 +54,6 @@ where
     /// Available tokens in the bucket. Zero if in debt.
     pub fn available(&self) -> f64 {
         self.bucket.available()
-    }
-
-    /// Prime the bucket with the burst capacity.
-    pub fn prime(&self) {
-        self.bucket.add_tokens(self.bucket.limit().burst().get())
     }
 
     pub fn add_tokens(&self, tokens: impl Into<f64>) {
@@ -129,7 +124,7 @@ mod tests {
         let start = tokio::time::Instant::now();
         let stream = stream::iter(vec![1, 2, 3, 4, 5]);
         let limit = RateLimit::per_second_and_burst(nonzero!(1u32), nonzero!(1u32));
-        let bucket = RawTokenBucket::<LocalStorage, _>::from_parts(limit, TokioClock::default());
+        let bucket = TokenBucket::<LocalStorage, _>::from_parts(limit, TokioClock::default());
 
         let mut throttled_stream = std::pin::pin!(RateLimitedStream::new(stream, bucket));
 
@@ -147,10 +142,9 @@ mod tests {
     async fn test_throttled_stream_burst() {
         let stream = stream::iter(vec![1, 2, 3, 4, 5]);
         let limit = RateLimit::per_second_and_burst(nonzero!(1u32), nonzero!(3u32));
-        let bucket = RawTokenBucket::<LocalStorage, _>::from_parts(limit, TokioClock::default());
+        let bucket = TokenBucket::<LocalStorage, _>::from_parts(limit, TokioClock::default());
 
         let mut throttled_stream = std::pin::pin!(RateLimitedStream::new(stream, bucket));
-        throttled_stream.prime();
 
         let mut results = vec![];
         let start = tokio::time::Instant::now();
@@ -167,7 +161,7 @@ mod tests {
     async fn test_throttled_stream_all_ready() {
         let stream = stream::iter(vec![1, 2, 3, 4, 5]);
         let limit = RateLimit::per_second(nonzero!(100000u32)).with_burst(nonzero!(1u32));
-        let bucket = RawTokenBucket::<LocalStorage, _>::from_parts(limit, TokioClock::default());
+        let bucket = TokenBucket::<LocalStorage, _>::from_parts(limit, TokioClock::default());
 
         let mut throttled_stream = std::pin::pin!(RateLimitedStream::new(stream, bucket));
 
@@ -188,10 +182,9 @@ mod tests {
             .throttle(Duration::from_secs(2))
             .chain(stream::iter(vec![6, 7, 8, 9]));
         let limit = RateLimit::per_second_and_burst(nonzero!(1u32), nonzero!(3u32));
-        let bucket = RawTokenBucket::<LocalStorage, _>::from_parts(limit, TokioClock::default());
+        let bucket = TokenBucket::<LocalStorage, _>::from_parts(limit, TokioClock::default());
 
         let mut throttled_stream = std::pin::pin!(RateLimitedStream::new(stream, bucket));
-        throttled_stream.prime();
 
         let mut results = vec![];
         let start = tokio::time::Instant::now();
