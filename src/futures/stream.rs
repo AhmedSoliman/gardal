@@ -9,7 +9,7 @@ use pin_project_lite::pin_project;
 use super::timer::{Sleep, sleep};
 use crate::RateLimit;
 use crate::storage::TimeStorage;
-use crate::{clock::Clock, bucket::TokenBucket};
+use crate::{bucket::TokenBucket, clock::Clock};
 #[cfg(not(feature = "tokio-hrtime"))]
 use tokio::time::Instant;
 

@@ -4,7 +4,7 @@ use std::time::Duration;
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use gardal::{
     AtomicStorage, FastClock, LocalStorage, ManualClock, PaddedAtomicStorage, QuantaClock,
-    RateLimit, TokenBucket, StdClock,
+    RateLimit, StdClock, TokenBucket,
 };
 use nonzero_ext::nonzero;
 
