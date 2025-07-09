@@ -1,6 +1,24 @@
-use crate::TimeStorage;
+pub mod atomic;
+mod cache_padded;
+pub mod local;
+pub mod padded_atomic;
 
-pub enum TokenAcquisition {
+/// Storage policy abstraction used by [`RawTokenBucket`].
+///
+/// Implementations can provide either atomic or non-atomic access to the
+/// underlying timestamp depending on the desired level of concurrency.
+pub trait TimeStorage {
+    /// Create a new storage policy with the provided zero time.
+    fn new(zero_time: f64) -> Self;
+    /// Load the current zero time.
+    fn load(&self) -> f64;
+    /// Store the zero time.
+    fn store(&self, value: f64);
+    /// Compare and exchange the zero time.
+    fn compare_exchange_weak(&self, current: f64, new: f64) -> Result<(), f64>;
+}
+
+pub(crate) enum TokenAcquisition {
     Acquired(f64),
     // the zero time at which the bucket is empty
     ZeroedAt(f64),
@@ -11,17 +29,15 @@ pub enum TokenAcquisition {
 /// zero tokens.
 ///
 /// Heavily inspired by folly's TokenBucket algorithm.
-#[derive(Debug)]
-pub struct TokenBucketStorage<S> {
+#[derive(Debug, Clone)]
+pub(crate) struct TokenBucketStorage<S> {
     inner: S,
 }
 
 impl<S: TimeStorage> TokenBucketStorage<S> {
     /// Create a new storage object with the provided zero time.
-    pub fn new(zero_time: f64) -> Self {
-        Self {
-            inner: S::new(zero_time),
-        }
+    pub fn new(storage: S) -> Self {
+        Self { inner: storage }
     }
 
     /// Reset the bucket to a given origin time.
@@ -31,15 +47,11 @@ impl<S: TimeStorage> TokenBucketStorage<S> {
         self.inner.store(zero_time);
     }
 
-    fn load_zero_time(&self) -> f64 {
-        self.inner.load()
-    }
-
     /// Current token balance given a rate, burst size and current time.
     pub fn balance(&self, rate: f64, burst_size: f64, now: f64) -> f64 {
         debug_assert!(rate > 0.0);
         debug_assert!(burst_size > 0.0);
-        let zt = self.load_zero_time();
+        let zt = self.inner.load();
         ((now - zt) * rate).min(burst_size)
     }
 
@@ -52,7 +64,7 @@ impl<S: TimeStorage> TokenBucketStorage<S> {
     {
         debug_assert!(rate > 0.0);
         debug_assert!(burst_size > 0.0);
-        let mut zero_time_old = self.load_zero_time();
+        let mut zero_time_old = self.inner.load();
         loop {
             let available = ((now - zero_time_old) * rate).min(burst_size);
             let consumed = f(available);
@@ -82,7 +94,7 @@ impl<S: TimeStorage> TokenBucketStorage<S> {
     {
         debug_assert!(rate > 0.0);
         debug_assert!(burst_size > 0.0);
-        let mut zero_time_old = self.load_zero_time();
+        let mut zero_time_old = self.inner.load();
         loop {
             let available = ((now - zero_time_old) * rate).min(burst_size);
             let consumed = f(available);
@@ -107,7 +119,7 @@ impl<S: TimeStorage> TokenBucketStorage<S> {
     /// from the future). The resulting zero time is returned in fractional seconds.
     pub fn return_tokens(&self, tokens: f64, rate: f64) -> f64 {
         debug_assert!(rate > 0.0);
-        let mut zero_time_old = self.load_zero_time();
+        let mut zero_time_old = self.inner.load();
         loop {
             let zero_time_new = zero_time_old - tokens / rate;
 
@@ -125,6 +137,6 @@ impl<S: TimeStorage> TokenBucketStorage<S> {
 
     /// Time when the bucket will have `target` tokens available.
     pub fn time_when_bucket(&self, rate: f64, target: f64) -> f64 {
-        self.load_zero_time() + target / rate
+        self.inner.load() + target / rate
     }
 }

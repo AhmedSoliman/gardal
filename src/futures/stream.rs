@@ -1,23 +1,19 @@
+use std::num::NonZeroU32;
 use std::pin::Pin;
-use std::task::{Context, Poll};
+use std::task::{Context, Poll, ready};
 use std::time::Duration;
 
 use futures::Stream;
 use pin_project_lite::pin_project;
 
 use super::timer::{Instant, Sleep, sleep};
-use crate::{RateLimit, TimeStorage};
+use crate::RateLimit;
+use crate::storage::TimeStorage;
 use crate::{clock::Clock, raw::RawTokenBucket};
 
 pin_project! {
     /// A stream that is rate limited by a token bucket.
-    ///
-    /// The stream does not buffer any items, this means that the stream will always
-    /// try to consume tokens from the bucket before driving the underlying stream.
-    ///
-    /// The side effect of this is that the stream might be throttled for 1 extra poll cycle if the
-    /// token bucket is empty while the underlying stream has already terminated.
-    pub struct LazyRateLimitedStream<S, ST, C>
+    pub struct RateLimitedStream<S, ST, C>
     where
         S: Stream,
         ST: TimeStorage,
@@ -27,12 +23,12 @@ pin_project! {
         stream: S,
         bucket: RawTokenBucket<ST, C>,
         #[pin]
-        delay: Sleep,
-        terminated: bool,
+        delay: Option<Sleep>,
+        ready_to_consume: bool,
     }
 }
 
-impl<S, ST, C> LazyRateLimitedStream<S, ST, C>
+impl<S, ST, C> RateLimitedStream<S, ST, C>
 where
     S: Stream,
     ST: TimeStorage,
@@ -41,10 +37,10 @@ where
     /// Creates a new throttled stream.
     pub fn new(stream: S, bucket: RawTokenBucket<ST, C>) -> Self {
         Self {
-            terminated: false,
             stream,
             bucket,
-            delay: sleep(Duration::ZERO),
+            ready_to_consume: true,
+            delay: None,
         }
     }
 
@@ -68,7 +64,7 @@ where
     }
 }
 
-impl<S, ST, C> Stream for LazyRateLimitedStream<S, ST, C>
+impl<S, ST, C> Stream for RateLimitedStream<S, ST, C>
 where
     S: Stream,
     ST: TimeStorage,
@@ -77,52 +73,49 @@ where
     type Item = S::Item;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        if self.terminated {
-            return Poll::Ready(None);
+        let mut this = self.project();
+        // are we already waiting for a delay?
+
+        if let Some(delay) = this.delay.as_mut().as_pin_mut() {
+            ready!(delay.poll(cx));
         }
 
-        let mut this = self.project();
-        loop {
-            // are we already waiting for a delay?
-            match this.delay.as_mut().poll(cx) {
-                Poll::Ready(_) => {}
-                Poll::Pending => return Poll::Pending,
-            }
+        // deliver immediately
+        let next_item = ready!(this.stream.poll_next(cx));
 
-            match this.bucket.try_consume_one() {
-                Ok(tokens) => {
-                    // I've consumed the tokens, but let's say that the stream has nothing to offer,
-                    // then we need to put back the tokens in the bucket.
-                    match this.stream.poll_next(cx) {
-                        Poll::Ready(Some(item)) => {
-                            return Poll::Ready(Some(item));
-                        }
-                        Poll::Ready(None) => {
-                            this.bucket.add_tokens(tokens);
-                            *this.terminated = true;
-                            return Poll::Ready(None);
-                        }
-                        Poll::Pending => {
-                            this.bucket.add_tokens(tokens);
-                            return Poll::Pending;
-                        }
+        match this
+            .bucket
+            .consume_with_borrow(unsafe { NonZeroU32::new_unchecked(1) })
+            .unwrap()
+        {
+            Some(duration) => {
+                #[cfg(feature = "tokio-hrtime")]
+                {
+                    this.delay.set(Some(sleep(Duration::from(duration))));
+                }
+                #[cfg(not(feature = "tokio-hrtime"))]
+                {
+                    if let Some(delay) = this.delay.as_mut().as_pin_mut() {
+                        delay.reset(Instant::now() + Duration::from(duration));
+                    } else {
+                        this.delay.set(Some(sleep(Duration::from(duration))));
                     }
                 }
-                Err(e) => {
-                    this.delay
-                        .as_mut()
-                        .reset(Instant::now() + e.earliest_retry_after());
-                }
+            }
+            None => {
+                this.delay.set(None);
             }
         }
+        Poll::Ready(next_item)
     }
 }
 
 #[cfg(all(test, not(feature = "tokio-hrtime")))]
 mod tests {
     use super::*;
+    use crate::RateLimit;
     use crate::clock::TokioClock;
-    use crate::{LocalStorage, RateLimit};
+    use crate::storage::local::LocalStorage;
     use std::time::Duration;
 
     use futures::stream;
@@ -136,7 +129,7 @@ mod tests {
         let limit = RateLimit::per_second_and_burst(nonzero!(1u32), nonzero!(1u32));
         let bucket = RawTokenBucket::<LocalStorage, _>::from_parts(limit, TokioClock::default());
 
-        let mut throttled_stream = std::pin::pin!(LazyRateLimitedStream::new(stream, bucket));
+        let mut throttled_stream = std::pin::pin!(RateLimitedStream::new(stream, bucket));
 
         let mut results = vec![];
         while let Some(item) = throttled_stream.next().await {
@@ -154,7 +147,7 @@ mod tests {
         let limit = RateLimit::per_second_and_burst(nonzero!(1u32), nonzero!(3u32));
         let bucket = RawTokenBucket::<LocalStorage, _>::from_parts(limit, TokioClock::default());
 
-        let mut throttled_stream = std::pin::pin!(LazyRateLimitedStream::new(stream, bucket));
+        let mut throttled_stream = std::pin::pin!(RateLimitedStream::new(stream, bucket));
         throttled_stream.prime();
 
         let mut results = vec![];
@@ -174,7 +167,7 @@ mod tests {
         let limit = RateLimit::per_second(nonzero!(100000u32)).with_burst(nonzero!(1u32));
         let bucket = RawTokenBucket::<LocalStorage, _>::from_parts(limit, TokioClock::default());
 
-        let mut throttled_stream = std::pin::pin!(LazyRateLimitedStream::new(stream, bucket));
+        let mut throttled_stream = std::pin::pin!(RateLimitedStream::new(stream, bucket));
 
         let mut results = vec![];
         let start = tokio::time::Instant::now();
@@ -195,7 +188,7 @@ mod tests {
         let limit = RateLimit::per_second_and_burst(nonzero!(1u32), nonzero!(3u32));
         let bucket = RawTokenBucket::<LocalStorage, _>::from_parts(limit, TokioClock::default());
 
-        let mut throttled_stream = std::pin::pin!(LazyRateLimitedStream::new(stream, bucket));
+        let mut throttled_stream = std::pin::pin!(RateLimitedStream::new(stream, bucket));
         throttled_stream.prime();
 
         let mut results = vec![];

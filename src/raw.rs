@@ -5,10 +5,13 @@ use likely_stable::unlikely;
 
 use crate::clock::Nanos;
 use crate::error::{ExceededBurstCapacity, RateLimited};
-use crate::storage::{TokenAcquisition, TokenBucketStorage};
-use crate::{AtomicStorage, Clock, PaddedAtomicStorage, RateLimit, StdClock, TimeStorage, Tokens};
+use crate::storage::atomic::AtomicStorage;
+use crate::storage::padded_atomic::PaddedAtomicStorage;
+use crate::storage::{TimeStorage, TokenAcquisition, TokenBucketStorage};
+use crate::{Clock, RateLimit, StdClock, Tokens};
 
 /// Dynamic token bucket using pluggable storage strategy
+#[derive(Clone)]
 pub struct RawTokenBucket<S = PaddedAtomicStorage, C = StdClock> {
     bucket: TokenBucketStorage<S>,
     clock: C,
@@ -25,8 +28,9 @@ impl RawTokenBucket<AtomicStorage, StdClock> {
 impl<C: Clock> RawTokenBucket<PaddedAtomicStorage, C> {
     /// Create a token bucket with a fixed rate and burst size using the given clock implementation
     pub fn with_clock(limit: RateLimit, clock: C) -> Self {
+        let storage = PaddedAtomicStorage::new(clock.now());
         Self {
-            bucket: TokenBucketStorage::<PaddedAtomicStorage>::new(clock.now()),
+            bucket: TokenBucketStorage::<PaddedAtomicStorage>::new(storage),
             clock,
             limit,
         }
@@ -36,8 +40,10 @@ impl<C: Clock> RawTokenBucket<PaddedAtomicStorage, C> {
 impl<S: TimeStorage, C: Clock> RawTokenBucket<S, C> {
     /// Create a token bucket with a fixed rate and burst size using the given clock implementation
     pub fn from_parts(limit: RateLimit, clock: C) -> Self {
+        // let storage = S::new(clock.now());
+        let storage = S::new(0.0);
         Self {
-            bucket: TokenBucketStorage::<S>::new(clock.now()),
+            bucket: TokenBucketStorage::new(storage),
             clock,
             limit,
         }
@@ -229,8 +235,8 @@ mod tests {
 
     use nonzero_ext::nonzero;
 
-    use crate::PaddedAtomicStorage;
     use crate::clock::ManualClock;
+    use crate::storage::padded_atomic::PaddedAtomicStorage;
 
     use super::*;
 
