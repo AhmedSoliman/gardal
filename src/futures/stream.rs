@@ -6,10 +6,12 @@ use std::time::Duration;
 use futures::Stream;
 use pin_project_lite::pin_project;
 
-use super::timer::{Instant, Sleep, sleep};
+use super::timer::{Sleep, sleep};
 use crate::RateLimit;
 use crate::storage::TimeStorage;
 use crate::{clock::Clock, raw::RawTokenBucket};
+#[cfg(not(feature = "tokio-hrtime"))]
+use tokio::time::Instant;
 
 pin_project! {
     /// A stream that is rate limited by a token bucket.
