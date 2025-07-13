@@ -4,8 +4,28 @@ use super::TimeStorage;
 use super::atomic::AtomicF64;
 use super::cache_padded::CachePadded;
 
-/// Atomic implementation of [`TimeStorage`] padded to one cache line to
-/// avoid false sharing.
+/// Cache-line padded atomic storage to prevent false sharing.
+///
+/// This is the default storage implementation that provides thread-safe access
+/// while avoiding false sharing between CPU cores. The padding ensures that
+/// the atomic variable occupies its own cache line.
+///
+/// # Performance
+///
+/// Offers the best performance for multi-threaded scenarios by preventing
+/// false sharing, which can significantly impact performance when multiple
+/// cores are accessing nearby memory locations.
+///
+/// # Examples
+///
+/// ```rust
+/// use gardal::{TokenBucket, RateLimit};
+/// use std::num::NonZeroU32;
+///
+/// // PaddedAtomicStorage is the default storage type
+/// let limit = RateLimit::per_second(NonZeroU32::new(100).unwrap());
+/// let bucket = TokenBucket::new(limit);
+/// ```
 pub struct PaddedAtomicStorage(CachePadded<AtomicF64>);
 
 impl TimeStorage for PaddedAtomicStorage {

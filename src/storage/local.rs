@@ -2,8 +2,26 @@ use std::cell::Cell;
 
 use super::TimeStorage;
 
-/// Non atomic implementation of [`TimeStorage`]. This is intended for
-/// single threaded scenarios and uses [`Cell`] internally.
+/// Non-atomic storage implementation for single-threaded use.
+///
+/// Uses [`Cell`] internally for efficient single-threaded access.
+/// This storage type is not thread-safe and should only be used
+/// when the token bucket will be accessed from a single thread.
+///
+/// # Performance
+///
+/// Offers the best performance for single-threaded scenarios as it
+/// avoids the overhead of atomic operations.
+///
+/// # Examples
+///
+/// ```rust
+/// use gardal::{TokenBucket, RateLimit, LocalStorage, StdClock};
+/// use std::num::NonZeroU32;
+///
+/// let limit = RateLimit::per_second(NonZeroU32::new(100).unwrap());
+/// let bucket = TokenBucket::<LocalStorage, _>::from_parts(limit, StdClock::default());
+/// ```
 #[derive(Debug)]
 pub struct LocalStorage(Cell<f64>);
 

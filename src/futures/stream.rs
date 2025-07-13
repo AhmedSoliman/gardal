@@ -14,7 +14,31 @@ use crate::{bucket::TokenBucket, clock::Clock};
 use tokio::time::Instant;
 
 pin_project! {
-    /// A stream that is rate limited by a token bucket.
+    /// A stream wrapper that applies rate limiting using a token bucket.
+    ///
+    /// This stream consumes one token per item and will delay items when
+    /// tokens are not available. It uses borrowing from future capacity
+    /// to maintain smooth flow control.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # #[cfg(feature = "async")]
+    /// # {
+    /// use gardal::{TokenBucket, RateLimit};
+    /// use gardal::futures::RateLimitedStream;
+    /// use futures::stream;
+    /// use std::num::NonZeroU32;
+    ///
+    /// # async fn example() {
+    /// let limit = RateLimit::per_second(NonZeroU32::new(10).unwrap());
+    /// let bucket = TokenBucket::new(limit);
+    /// let stream = stream::iter(0..100);
+    ///
+    /// let rate_limited = RateLimitedStream::new(stream, bucket);
+    /// # }
+    /// # }
+    /// ```
     pub struct RateLimitedStream<S, ST, C>
     where
         S: Stream,
@@ -36,7 +60,12 @@ where
     ST: TimeStorage,
     C: Clock,
 {
-    /// Creates a new throttled stream.
+    /// Creates a new rate-limited stream.
+    ///
+    /// # Arguments
+    ///
+    /// * `stream` - The underlying stream to rate limit
+    /// * `bucket` - The token bucket to use for rate limiting
     pub fn new(stream: S, bucket: TokenBucket<ST, C>) -> Self {
         Self {
             stream,
@@ -46,16 +75,26 @@ where
         }
     }
 
-    /// Returns the current rate limit.
+    /// Returns a reference to the current rate limit configuration.
     pub fn limit(&self) -> &RateLimit {
         self.bucket.limit()
     }
 
-    /// Available tokens in the bucket. Zero if in debt.
+    /// Returns the number of tokens currently available in the bucket.
+    ///
+    /// Returns zero if the bucket is in debt from borrowing.
     pub fn available(&self) -> f64 {
         self.bucket.available()
     }
 
+    /// Adds tokens back to the bucket.
+    ///
+    /// Useful for returning tokens from cancelled operations or manually
+    /// adding capacity.
+    ///
+    /// # Arguments
+    ///
+    /// * `tokens` - Number of tokens to add
     pub fn add_tokens(&self, tokens: impl Into<f64>) {
         self.bucket.add_tokens(tokens)
     }

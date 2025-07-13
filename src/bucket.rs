@@ -10,7 +10,34 @@ use crate::storage::padded_atomic::PaddedAtomicStorage;
 use crate::storage::{TimeStorage, TokenAcquisition, TokenBucketStorage};
 use crate::{Clock, RateLimit, StdClock, Tokens};
 
-/// Dynamic token bucket using pluggable storage strategy
+/// A token bucket rate limiter with configurable storage and clock implementations.
+///
+/// The token bucket algorithm allows for controlled rate limiting with burst capacity.
+/// Tokens are added to the bucket at a steady rate, and operations consume tokens.
+/// When the bucket is empty, operations are rate limited.
+///
+/// # Type Parameters
+///
+/// - `S`: Storage strategy (default: [`PaddedAtomicStorage`] for concurrent access)
+/// - `C`: Clock implementation (default: [`StdClock`] for standard timing)
+///
+/// # Examples
+///
+/// ```rust
+/// use gardal::{TokenBucket, RateLimit};
+/// use std::num::NonZeroU32;
+///
+/// let limit = RateLimit::per_second_and_burst(
+///     NonZeroU32::new(10).unwrap(),
+///     NonZeroU32::new(20).unwrap()
+/// );
+/// let bucket = TokenBucket::new(limit);
+///
+/// // Try to consume 5 tokens
+/// if let Some(tokens) = bucket.consume(NonZeroU32::new(5).unwrap()) {
+///     println!("Successfully consumed {} tokens", tokens.as_u64());
+/// }
+/// ```
 #[derive(Clone)]
 pub struct TokenBucket<S = PaddedAtomicStorage, C = StdClock> {
     bucket: TokenBucketStorage<S>,
@@ -19,14 +46,49 @@ pub struct TokenBucket<S = PaddedAtomicStorage, C = StdClock> {
 }
 
 impl TokenBucket<AtomicStorage, StdClock> {
-    /// Create a token bucket with a fixed rate and burst size using the given storage policy.
+    /// Creates a new token bucket with the specified rate limit using atomic storage and standard clock.
+    ///
+    /// This is the most common constructor for basic use cases requiring thread-safe access.
+    ///
+    /// # Arguments
+    ///
+    /// * `limit` - The rate and burst configuration for the bucket
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use gardal::{TokenBucket, RateLimit};
+    /// use std::num::NonZeroU32;
+    ///
+    /// let limit = RateLimit::per_second(NonZeroU32::new(100).unwrap());
+    /// let bucket = TokenBucket::new(limit);
+    /// ```
     pub fn new(limit: RateLimit) -> Self {
         TokenBucket::<AtomicStorage>::from_parts(limit, StdClock::default())
     }
 }
 
 impl<C: Clock> TokenBucket<PaddedAtomicStorage, C> {
-    /// Create a token bucket with a fixed rate and burst size using the given clock implementation
+    /// Creates a new token bucket with a custom clock implementation.
+    ///
+    /// Use this when you need a specific timing source, such as `FastClock` for high-performance
+    /// scenarios or `ManualClock` for testing.
+    ///
+    /// # Arguments
+    ///
+    /// * `limit` - The rate and burst configuration for the bucket
+    /// * `clock` - The clock implementation to use for timing
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use gardal::{TokenBucket, RateLimit, ManualClock};
+    /// use std::num::NonZeroU32;
+    ///
+    /// let limit = RateLimit::per_second(NonZeroU32::new(10).unwrap());
+    /// let clock = ManualClock::new(0.0);
+    /// let bucket = TokenBucket::with_clock(limit, clock);
+    /// ```
     pub fn with_clock(limit: RateLimit, clock: C) -> Self {
         let storage = PaddedAtomicStorage::new(clock.now());
         Self {
@@ -38,7 +100,15 @@ impl<C: Clock> TokenBucket<PaddedAtomicStorage, C> {
 }
 
 impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
-    /// Create a token bucket with a fixed rate and burst size using the given clock implementation
+    /// Creates a token bucket from custom storage and clock implementations.
+    ///
+    /// This provides maximum flexibility for advanced use cases requiring specific
+    /// storage strategies or clock implementations.
+    ///
+    /// # Arguments
+    ///
+    /// * `limit` - The rate and burst configuration for the bucket
+    /// * `clock` - The clock implementation to use for timing
     pub fn from_parts(limit: RateLimit, clock: C) -> Self {
         // let storage = S::new(clock.now());
         let storage = S::new(0.0);
@@ -49,7 +119,13 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
         }
     }
 
-    /// Change rate and burst size.
+    /// Updates the rate limit configuration while preserving available tokens.
+    ///
+    /// The current token balance is maintained proportionally when changing limits.
+    ///
+    /// # Arguments
+    ///
+    /// * `limit` - The new rate and burst configuration
     pub fn reset(&mut self, limit: RateLimit) {
         let now = self.clock.now();
         let available = self
@@ -60,7 +136,17 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
         self.set_capacity(available, now);
     }
 
-    /// Consume self and resets the bucket to the given rate limit
+    /// Consumes the bucket and returns a new one with updated rate limits.
+    ///
+    /// Similar to [`reset`](Self::reset) but takes ownership and returns a new bucket.
+    ///
+    /// # Arguments
+    ///
+    /// * `limit` - The new rate and burst configuration
+    ///
+    /// # Returns
+    ///
+    /// A new token bucket with the updated configuration
     pub fn update_limit(self, limit: RateLimit) -> Self {
         let now = self.clock.now();
         let available = self
@@ -81,11 +167,37 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
         self.bucket.reset(now - tokens / self.limit.rate);
     }
 
-    /// Attempt to consume exactly `to_consume` tokens. The fastest way to consume tokens from the
-    /// bucket.
+    /// Attempts to consume exactly the specified number of tokens.
     ///
-    /// If you also need an estimate of how long you'll need to wait to consume the tokens if the
-    /// bucket is already full (or in debt), use [`Self::try_consume()`] instead.
+    /// This is the fastest consumption method. Returns `Some(tokens)` if successful,
+    /// or `None` if insufficient tokens are available.
+    ///
+    /// For wait time estimates when tokens are unavailable, use [`try_consume`](Self::try_consume).
+    ///
+    /// # Arguments
+    ///
+    /// * `to_consume` - Number of tokens to consume
+    ///
+    /// # Returns
+    ///
+    /// * `Some(Tokens)` - Successfully consumed tokens
+    /// * `None` - Insufficient tokens available
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use gardal::{TokenBucket, RateLimit};
+    /// use std::num::NonZeroU32;
+    ///
+    /// let limit = RateLimit::per_second(NonZeroU32::new(10).unwrap());
+    /// let bucket = TokenBucket::new(limit);
+    ///
+    /// if let Some(tokens) = bucket.consume(NonZeroU32::new(5).unwrap()) {
+    ///     println!("Consumed {} tokens", tokens.as_u64());
+    /// } else {
+    ///     println!("Not enough tokens available");
+    /// }
+    /// ```
     pub fn consume(&self, to_consume: impl Into<NonZeroU32>) -> Option<Tokens> {
         let now = self.clock.now();
         let to_consume: NonZeroU32 = to_consume.into();
@@ -99,17 +211,61 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
         Tokens::new_checked(consumed)
     }
 
-    /// Consume one token
+    /// Attempts to consume exactly one token.
+    ///
+    /// Convenience method equivalent to `consume(1)`.
+    ///
+    /// # Returns
+    ///
+    /// * `Some(Tokens)` - Successfully consumed one token
+    /// * `None` - No tokens available
     pub fn consume_one(&self) -> Option<Tokens> {
         self.consume(NonZeroU32::new(1u32).unwrap())
     }
 
-    /// Try consume one token
+    /// Attempts to consume one token with wait time information.
+    ///
+    /// Convenience method equivalent to `try_consume(1)`.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Tokens)` - Successfully consumed one token
+    /// * `Err(RateLimited)` - Rate limited with suggested wait time
     pub fn try_consume_one(&self) -> Result<Tokens, RateLimited> {
         self.try_consume(NonZeroU32::new(1u32).unwrap())
     }
 
-    /// Attempt to consume tokens.
+    /// Attempts to consume tokens with detailed rate limiting information.
+    ///
+    /// Unlike [`consume`](Self::consume), this method provides an estimate of how long
+    /// to wait before retrying when tokens are unavailable.
+    ///
+    /// # Arguments
+    ///
+    /// * `to_consume` - Number of tokens to consume
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Tokens)` - Successfully consumed tokens
+    /// * `Err(RateLimited)` - Rate limited with suggested retry time
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use gardal::{TokenBucket, RateLimit};
+    /// use std::num::NonZeroU32;
+    ///
+    /// let limit = RateLimit::per_second(NonZeroU32::new(10).unwrap());
+    /// let bucket = TokenBucket::new(limit);
+    ///
+    /// match bucket.try_consume(NonZeroU32::new(5).unwrap()) {
+    ///     Ok(tokens) => println!("Consumed {} tokens", tokens.as_u64()),
+    ///     Err(rate_limited) => {
+    ///         let wait_time = rate_limited.earliest_retry_after();
+    ///         println!("Rate limited, retry in {:?}", wait_time);
+    ///     }
+    /// }
+    /// ```
     pub fn try_consume(&self, to_consume: impl Into<NonZeroU32>) -> Result<Tokens, RateLimited> {
         let to_consume: NonZeroU32 = to_consume.into();
         let to_consume: f64 = to_consume.get() as f64;
@@ -131,7 +287,34 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
         }
     }
 
-    /// Consume or drain available tokens.
+    /// Consumes up to the requested number of tokens, returning whatever is available.
+    ///
+    /// This method will consume as many tokens as possible up to the requested amount,
+    /// without waiting. Returns `None` if no tokens are available.
+    ///
+    /// # Arguments
+    ///
+    /// * `to_consume` - Maximum number of tokens to consume
+    ///
+    /// # Returns
+    ///
+    /// * `Some(Tokens)` - Number of tokens actually consumed (may be less than requested)
+    /// * `None` - No tokens available
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use gardal::{TokenBucket, RateLimit};
+    /// use std::num::NonZeroU32;
+    ///
+    /// let limit = RateLimit::per_second(NonZeroU32::new(10).unwrap());
+    /// let bucket = TokenBucket::new(limit);
+    ///
+    /// // Request 100 tokens, but only get what's available
+    /// if let Some(tokens) = bucket.saturating_consume(NonZeroU32::new(100).unwrap()) {
+    ///     println!("Got {} tokens (may be less than 100)", tokens.as_u64());
+    /// }
+    /// ```
     pub fn saturating_consume(&self, to_consume: impl Into<NonZeroU32>) -> Option<Tokens> {
         let now = self.clock.now();
         let to_consume: NonZeroU32 = to_consume.into();
@@ -139,20 +322,68 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
         Tokens::new_checked(self.saturating_consume_inner(to_consume, now))
     }
 
-    /// Return unused tokens or manually add tokens to the bucket.
+    /// Returns unused tokens to the bucket or manually adds tokens.
     ///
-    /// This will not cause the bucket to overflow. The bucket's capacity (burst size)
-    /// is maintained.
+    /// This operation respects the bucket's burst capacity and will not cause overflow.
+    /// Useful for returning tokens from cancelled operations.
+    ///
+    /// # Arguments
+    ///
+    /// * `tokens` - Number of tokens to add back to the bucket
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use gardal::{TokenBucket, RateLimit};
+    /// use std::num::NonZeroU32;
+    ///
+    /// let limit = RateLimit::per_second(NonZeroU32::new(10).unwrap());
+    /// let bucket = TokenBucket::new(limit);
+    ///
+    /// // Return 5 tokens to the bucket
+    /// bucket.add_tokens(5.0);
+    /// ```
     pub fn add_tokens(&self, tokens: impl Into<f64>) {
         let tokens = tokens.into();
         debug_assert!(tokens > 0.0);
         self.bucket.return_tokens(tokens, self.limit.rate);
     }
 
-    /// Borrow from the future.
+    /// Consumes tokens by borrowing from future capacity.
     ///
-    /// The returns value is the number of seconds the consumer needs to wait before
-    /// the reservation becomes valid.
+    /// This allows consuming more tokens than currently available by going into "debt".
+    /// The bucket will need time to replenish before more tokens can be consumed.
+    ///
+    /// # Arguments
+    ///
+    /// * `to_consume` - Number of tokens to consume
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(None)` - Tokens consumed immediately without borrowing
+    /// * `Ok(Some(duration))` - Tokens consumed with borrowing; wait time until debt is paid
+    /// * `Err(ExceededBurstCapacity)` - Cannot borrow more than burst capacity
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use gardal::{TokenBucket, RateLimit};
+    /// use std::num::NonZeroU32;
+    ///
+    /// let limit = RateLimit::per_second_and_burst(
+    ///     NonZeroU32::new(10).unwrap(),
+    ///     NonZeroU32::new(20).unwrap()
+    /// );
+    /// let bucket = TokenBucket::new(limit);
+    ///
+    /// match bucket.consume_with_borrow(NonZeroU32::new(15).unwrap()) {
+    ///     Ok(Some(wait_time)) => {
+    ///         println!("Borrowed tokens, wait {:?} before next operation", wait_time);
+    ///     }
+    ///     Ok(None) => println!("Consumed without borrowing"),
+    ///     Err(_) => println!("Cannot borrow more than burst capacity"),
+    /// }
+    /// ```
     pub fn consume_with_borrow(
         &self,
         to_consume: impl Into<NonZeroU32>,
@@ -177,9 +408,20 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
         Ok(None)
     }
 
-    /// Saturating borrow from the future
+    /// Consumes tokens with borrowing, limited to burst capacity.
     ///
-    /// Returns the tokens drained and the needed wait time before the reservation becomes valid.
+    /// Similar to [`consume_with_borrow`](Self::consume_with_borrow) but automatically
+    /// limits the request to the burst capacity instead of returning an error.
+    ///
+    /// # Arguments
+    ///
+    /// * `to_consume` - Number of tokens to consume (capped at burst capacity)
+    ///
+    /// # Returns
+    ///
+    /// A tuple of:
+    /// * `Option<Tokens>` - Number of tokens consumed (None if no borrowing occurred)
+    /// * `Duration` - Wait time until the debt is paid (zero if no borrowing)
     pub fn saturating_consume_with_borrow(
         &self,
         to_consume: impl Into<NonZeroU32>,
@@ -206,17 +448,36 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
         (None, Duration::ZERO)
     }
 
-    /// Tokens available now (zero if in debt).
+    /// Returns the number of tokens currently available for consumption.
+    ///
+    /// This value is always non-negative. If the bucket is in debt from borrowing,
+    /// this returns zero.
+    ///
+    /// # Returns
+    ///
+    /// Number of tokens available for immediate consumption
     pub fn available(&self) -> f64 {
         self.balance().max(0.0)
     }
 
-    /// Token balance (may be negative if in debt).
+    /// Returns the current token balance, which may be negative if in debt.
+    ///
+    /// Unlike [`available`](Self::available), this can return negative values
+    /// when tokens have been borrowed from future capacity.
+    ///
+    /// # Returns
+    ///
+    /// Current token balance (negative indicates debt)
     pub fn balance(&self) -> f64 {
         self.bucket
             .balance(self.limit.rate, self.limit.burst, self.clock.now())
     }
 
+    /// Returns a reference to the current rate limit configuration.
+    ///
+    /// # Returns
+    ///
+    /// Reference to the [`RateLimit`] configuration
     pub fn limit(&self) -> &RateLimit {
         &self.limit
     }
