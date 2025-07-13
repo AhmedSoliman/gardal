@@ -23,21 +23,16 @@ pin_project! {
     /// # Examples
     ///
     /// ```rust
-    /// # #[cfg(feature = "async")]
-    /// # {
     /// use gardal::{TokenBucket, RateLimit};
     /// use gardal::futures::RateLimitedStream;
     /// use futures::stream;
     /// use std::num::NonZeroU32;
     ///
-    /// # async fn example() {
     /// let limit = RateLimit::per_second(NonZeroU32::new(10).unwrap());
     /// let bucket = TokenBucket::new(limit);
     /// let stream = stream::iter(0..100);
     ///
     /// let rate_limited = RateLimitedStream::new(stream, bucket);
-    /// # }
-    /// # }
     /// ```
     pub struct RateLimitedStream<S, ST, C>
     where

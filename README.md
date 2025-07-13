@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/gardal.svg)](https://crates.io/crates/gardal)
 [![Documentation](https://docs.rs/gardal/badge.svg)](https://docs.rs/gardal)
 [![CI](https://github.com/AhmedSoliman/gardal/workflows/CI/badge.svg)](https://github.com/AhmedSoliman/gardal/actions)
-[![License](https://img.shields.io/badge/license-Apache%202.0%20OR%20MIT-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache%202.0%20OR%20MIT-blue.svg)](http://www.apache.org/licenses/LICENSE-2.0)
 
 A performance-focused token bucket rate limiting and throttling library for Rust with optional async support.
 
@@ -124,10 +124,10 @@ let bucket = TokenBucket::<AtomicSharedStorage>::from_parts(
 
 Gardal supports multiple clock implementations:
 
-- **`StdClock`**: Standard library clock (default)
-- **`ManualClock`**: Manual clock for testing
 - **`FastClock`**: High-performance quanta-based clock (requires `quanta` feature)
-- **`TokioClock`**: Tokio-based clock for async applications (requires `tokio` feature)
+- **`StdClock`**: Standard library clock (default)
+- **`TokioClock`**: Tokio-based clock for async applications (requires `async` feature)
+- **`ManualClock`**: Manual clock for testing
 
 ### High-Resolution Async Timers
 
@@ -197,7 +197,7 @@ Gardal requires Rust 1.87.0 or later.
 
 ## License
 
-Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE) or http://www.apache.org/licenses/LICENSE-2.0)
+Apache License, Version 2.0 ([LICENSE-APACHE](http://www.apache.org/licenses/LICENSE-2.0)
 
 ## Contributing
 

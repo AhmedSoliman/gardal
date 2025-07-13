@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-//! Vendored from crossbeam-utils https://github.com/crossbeam-rs/crossbeam/blob/983d56b6007ca4c22b56a665a7785f40f55c2a53/crossbeam-utils/src/cache_padded.rs
+//! Vendored from crossbeam-utils <https://github.com/crossbeam-rs/crossbeam/blob/983d56b6007ca4c22b56a665a7785f40f55c2a53/crossbeam-utils/src/cache_padded.rs>
 //!
 //! Under the Apache 2.0 license.
 

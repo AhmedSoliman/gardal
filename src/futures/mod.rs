@@ -80,6 +80,42 @@ where
     /// A [`RateLimitedStream`] that wraps this stream with rate limiting
     fn rate_limit(self, bucket: TokenBucket<ST, C>) -> RateLimitedStream<S, ST, C>;
 
+    /// Applies weighted rate limiting to this stream using the provided token bucket.
+    ///
+    /// Each item in the stream can consume a different number of tokens based on the
+    /// weight function. This allows for more sophisticated rate limiting where different
+    /// items have different costs.
+    ///
+    /// # Arguments
+    ///
+    /// * `bucket` - The token bucket to use for rate limiting
+    /// * `weight_fn` - A function that determines how many tokens each item consumes
+    ///
+    /// # Returns
+    ///
+    /// A [`WeightedStream`] that wraps this stream with weighted rate limiting
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # #[cfg(feature = "async")]
+    /// # {
+    /// use gardal::{TokenBucket, RateLimit};
+    /// use gardal::futures::RateLimitedStreamExt;
+    /// use futures::stream;
+    /// use std::num::NonZeroU32;
+    ///
+    /// # async fn example() {
+    /// let limit = RateLimit::per_second(NonZeroU32::new(10).unwrap());
+    /// let bucket = TokenBucket::new(limit);
+    ///
+    /// let rate_limited = stream::iter(vec!["small", "large", "medium"])
+    ///     .rate_limit_weighted(bucket, |item: &&str| {
+    ///         NonZeroU32::new(item.len() as u32).unwrap_or(NonZeroU32::new(1).unwrap())
+    ///     });
+    /// # }
+    /// # }
+    /// ```
     fn rate_limit_weighted<F>(
         self,
         bucket: TokenBucket<ST, C>,
