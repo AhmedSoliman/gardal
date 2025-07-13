@@ -39,23 +39,17 @@ gardal = { version = "0.0.1-alpha.2", features = ["async", "tokio-hrtime"] }
 ```rust
 use gardal::{RateLimit, TokenBucket};
 use nonzero_ext::nonzero;
-use std::time::Duration;
 
-fn main() {
-    // Create a token bucket: 10 tokens per second, burst of 20
-    let bucket = TokenBucket::new(RateLimit::per_second_and_burst(
-        nonzero!(10u32),
-        nonzero!(20u32),
-    ));
+// Create a token bucket: 10 tokens per second, burst of 20
+let bucket = TokenBucket::new(RateLimit::per_second_and_burst(
+    nonzero!(10u32),
+    nonzero!(20u32),
+));
 
-    // Wait for tokens to accumulate
-    std::thread::sleep(Duration::from_secs(2));
-
-    // Consume 5 tokens
-    match bucket.consume(nonzero!(5u32)) {
-        Some(tokens) => println!("Consumed {} tokens", tokens.as_u64()),
-        None => println!("Not enough tokens available"),
-    }
+// Consume 5 tokens
+match bucket.consume(nonzero!(5u32)) {
+    Some(tokens) => println!("Consumed {} tokens", tokens.as_u64()),
+    None => println!("Not enough tokens available"),
 }
 ```
 
