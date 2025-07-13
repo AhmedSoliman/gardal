@@ -3,21 +3,71 @@ use std::time::Duration;
 
 use crate::clock::Nanos;
 
+/// Error returned when a token consumption request is rate limited.
+///
+/// Contains information about when the operation can be retried.
+///
+/// # Examples
+///
+/// ```rust
+/// use gardal::{TokenBucket, RateLimit};
+/// use std::num::NonZeroU32;
+///
+/// let limit = RateLimit::per_second(NonZeroU32::new(1).unwrap());
+/// let bucket = TokenBucket::new(limit);
+///
+/// match bucket.try_consume_one() {
+///     Ok(tokens) => println!("Got tokens: {}", tokens.as_u64()),
+///     Err(rate_limited) => {
+///         let wait_time = rate_limited.earliest_retry_after();
+///         println!("Rate limited, retry in {:?}", wait_time);
+///     }
+/// }
+/// ```
 pub struct RateLimited {
     pub(crate) earliest_retry_time: Nanos,
 }
 
-/// The bucket is full and the requested amount of tokens can never be accepted
-/// because it would exceed the burst capacity.
+/// Error returned when trying to borrow more tokens than the burst capacity allows.
+///
+/// This occurs when using [`consume_with_borrow`](crate::TokenBucket::consume_with_borrow)
+/// and requesting more tokens than the bucket's maximum capacity.
+///
+/// # Examples
+///
+/// ```rust
+/// use gardal::{TokenBucket, RateLimit};
+/// use std::num::NonZeroU32;
+///
+/// let limit = RateLimit::per_second_and_burst(
+///     NonZeroU32::new(10).unwrap(),
+///     NonZeroU32::new(20).unwrap()
+/// );
+/// let bucket = TokenBucket::new(limit);
+///
+/// // This will fail because 25 > burst capacity of 20
+/// match bucket.consume_with_borrow(NonZeroU32::new(25).unwrap()) {
+///     Ok(_) => println!("Borrowed successfully"),
+///     Err(_) => println!("Cannot borrow more than burst capacity"),
+/// }
+/// ```
 pub struct ExceededBurstCapacity;
 
 impl RateLimited {
-    /// The suggested duration to wait before retrying.
+    /// Returns the suggested duration to wait before retrying the operation.
+    ///
+    /// # Returns
+    ///
+    /// A [`Duration`] indicating the minimum time to wait before retrying
     pub fn earliest_retry_after(&self) -> Duration {
         Duration::from_secs_f64(self.earliest_retry_time.as_secs_f64())
     }
 
-    /// The suggested duration to wait before retrying in nanoseconds.
+    /// Returns the suggested wait time in high-precision nanoseconds.
+    ///
+    /// # Returns
+    ///
+    /// A `Nanos` value representing the minimum time to wait before retrying
     pub fn earliest_retry_after_nanos(&self) -> Nanos {
         self.earliest_retry_time
     }
