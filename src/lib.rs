@@ -45,6 +45,8 @@ pub use clock::{Clock, ManualClock, StdClock};
 #[cfg(feature = "quanta")]
 pub use clock::{FastClock, QuantaClock};
 pub use error::*;
+#[cfg(feature = "async")]
+pub use futures::RateLimitedStreamExt;
 pub use limit::RateLimit;
 pub use tokens::Tokens;
 
