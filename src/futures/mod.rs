@@ -31,9 +31,10 @@
 mod stream;
 mod timer;
 
-pub use stream::RateLimitedStream;
+pub use stream::{RateLimitedStream, WeightedStream};
 
 use futures::Stream;
+use std::num::NonZeroU32;
 
 use crate::storage::TimeStorage;
 use crate::{Clock, TokenBucket};
@@ -78,6 +79,14 @@ where
     ///
     /// A [`RateLimitedStream`] that wraps this stream with rate limiting
     fn rate_limit(self, bucket: TokenBucket<ST, C>) -> RateLimitedStream<S, ST, C>;
+
+    fn rate_limit_weighted<F>(
+        self,
+        bucket: TokenBucket<ST, C>,
+        weight_fn: F,
+    ) -> WeightedStream<S, ST, C, F>
+    where
+        F: Fn(&S::Item) -> NonZeroU32;
 }
 
 impl<S, ST, C> RateLimitedStreamExt<S, ST, C> for S
@@ -88,5 +97,16 @@ where
 {
     fn rate_limit(self, bucket: TokenBucket<ST, C>) -> RateLimitedStream<S, ST, C> {
         RateLimitedStream::new(self, bucket)
+    }
+
+    fn rate_limit_weighted<F>(
+        self,
+        bucket: TokenBucket<ST, C>,
+        weight_fn: F,
+    ) -> WeightedStream<S, ST, C, F>
+    where
+        F: Fn(&S::Item) -> NonZeroU32,
+    {
+        WeightedStream::new(self, bucket, weight_fn)
     }
 }
