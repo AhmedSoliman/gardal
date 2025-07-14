@@ -7,6 +7,9 @@
 
 A performance-focused token bucket rate limiting and throttling library for Rust with optional async support.
 
+> **Name Origin**: "Gardal" (جردل) is the Egyptian Arabic word for "bucket", reflecting the library's core token bucket algorithm.
+
+
 ## Features
 
 - **High Performance**: Optimized for minimal overhead with pluggable storage strategies
