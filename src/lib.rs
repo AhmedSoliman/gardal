@@ -50,6 +50,11 @@ pub use futures::RateLimitedStreamExt;
 pub use limit::RateLimit;
 pub use tokens::Tokens;
 
-pub use storage::atomic::{AtomicSharedStorage, AtomicStorage};
-pub use storage::local::LocalStorage;
-pub use storage::padded_atomic::PaddedAtomicStorage;
+pub use storage::{
+    TimeStorage, atomic::AtomicSharedStorage, atomic::AtomicStorage, local::LocalStorage,
+    padded_atomic::PaddedAtomicStorage,
+};
+
+pub(crate) mod private {
+    pub trait Sealed {}
+}

@@ -28,6 +28,8 @@ use super::cache_padded::CachePadded;
 /// ```
 pub struct PaddedAtomicStorage(CachePadded<AtomicF64>);
 
+impl crate::private::Sealed for PaddedAtomicStorage {}
+
 impl TimeStorage for PaddedAtomicStorage {
     fn new(zero_time: f64) -> Self {
         Self(CachePadded::new(AtomicF64::new(zero_time)))

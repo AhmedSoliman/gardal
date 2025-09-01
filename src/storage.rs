@@ -7,7 +7,7 @@ pub mod padded_atomic;
 ///
 /// Implementations can provide either atomic or non-atomic access to the
 /// underlying timestamp depending on the desired level of concurrency.
-pub trait TimeStorage {
+pub trait TimeStorage: crate::private::Sealed {
     /// Create a new storage policy with the provided zero time.
     fn new(zero_time: f64) -> Self;
     /// Load the current zero time.

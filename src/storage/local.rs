@@ -25,6 +25,8 @@ use super::TimeStorage;
 #[derive(Debug)]
 pub struct LocalStorage(Cell<f64>);
 
+impl crate::private::Sealed for LocalStorage {}
+
 impl TimeStorage for LocalStorage {
     fn new(zero_time: f64) -> Self {
         Self(Cell::new(zero_time))
