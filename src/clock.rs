@@ -77,6 +77,7 @@ pub trait Clock {
 /// let clock = StdClock::default();
 /// let bucket = TokenBucket::with_clock(limit, clock);
 /// ```
+#[derive(Clone)]
 pub struct StdClock {
     origin: std::time::Instant,
 }

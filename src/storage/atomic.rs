@@ -65,6 +65,8 @@ impl Debug for AtomicF64 {
 #[derive(Debug)]
 pub struct AtomicStorage(AtomicF64);
 
+impl crate::private::Sealed for AtomicStorage {}
+
 impl TimeStorage for AtomicStorage {
     fn new(zero_time: f64) -> Self {
         Self(AtomicF64::new(zero_time))
@@ -104,6 +106,8 @@ impl TimeStorage for AtomicStorage {
 /// ```
 #[derive(Debug, Clone)]
 pub struct AtomicSharedStorage(Arc<AtomicF64>);
+
+impl crate::private::Sealed for AtomicSharedStorage {}
 
 impl TimeStorage for AtomicSharedStorage {
     fn new(zero_time: f64) -> Self {
