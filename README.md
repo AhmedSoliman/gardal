@@ -200,7 +200,7 @@ Gardal requires Rust 1.87.0 or later.
 
 ## License
 
-Apache License, Version 2.0 ([LICENSE-APACHE](http://www.apache.org/licenses/LICENSE-2.0)
+Apache License, Version 2.0 ([LICENSE-APACHE](http://www.apache.org/licenses/LICENSE-2.0))
 
 ## Contributing
 
