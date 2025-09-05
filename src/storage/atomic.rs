@@ -56,10 +56,10 @@ impl Debug for AtomicF64 {
 /// # Examples
 ///
 /// ```rust
-/// use gardal::{TokenBucket, RateLimit, AtomicStorage, StdClock};
+/// use gardal::{TokenBucket, Limit, AtomicStorage, StdClock};
 /// use std::num::NonZeroU32;
 ///
-/// let limit = RateLimit::per_second(NonZeroU32::new(100).unwrap());
+/// let limit = Limit::per_second(NonZeroU32::new(100).unwrap());
 /// let bucket = TokenBucket::<AtomicStorage, _>::from_parts(limit, StdClock::default());
 /// ```
 #[derive(Debug)]
@@ -95,11 +95,11 @@ impl TimeStorage for AtomicStorage {
 /// # Examples
 ///
 /// ```rust
-/// use gardal::{TokenBucket, RateLimit, AtomicSharedStorage, ManualClock};
+/// use gardal::{TokenBucket, Limit, AtomicSharedStorage, ManualClock};
 /// use std::num::NonZeroU32;
 /// use std::sync::Arc;
 ///
-/// let limit = RateLimit::per_second(NonZeroU32::new(100).unwrap());
+/// let limit = Limit::per_second(NonZeroU32::new(100).unwrap());
 /// let clock = Arc::new(ManualClock::new(0.0));
 /// let bucket1 = TokenBucket::<AtomicSharedStorage, _>::from_parts(limit, Arc::clone(&clock));
 /// let bucket2 = bucket1.clone(); // Shares the same token state

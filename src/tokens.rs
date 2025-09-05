@@ -8,10 +8,10 @@ use std::num::NonZero;
 /// # Examples
 ///
 /// ```rust
-/// use gardal::{TokenBucket, RateLimit};
+/// use gardal::{TokenBucket, Limit};
 /// use std::num::NonZeroU32;
 ///
-/// let limit = RateLimit::per_second(NonZeroU32::new(10).unwrap());
+/// let limit = Limit::per_second(NonZeroU32::new(10).unwrap());
 /// let bucket = TokenBucket::new(limit);
 ///
 /// if let Some(tokens) = bucket.consume_one() {

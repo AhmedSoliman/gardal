@@ -8,7 +8,7 @@ use crate::error::{ExceededBurstCapacity, RateLimited};
 use crate::storage::atomic::AtomicStorage;
 use crate::storage::padded_atomic::PaddedAtomicStorage;
 use crate::storage::{TimeStorage, TokenAcquisition, TokenBucketStorage};
-use crate::{Clock, RateLimit, StdClock, Tokens};
+use crate::{Clock, Limit, StdClock, Tokens};
 
 pub const UNLIMITED_BUCKET: Option<TokenBucket> = const { None };
 
@@ -26,10 +26,10 @@ pub const UNLIMITED_BUCKET: Option<TokenBucket> = const { None };
 /// # Examples
 ///
 /// ```rust
-/// use gardal::{TokenBucket, RateLimit};
+/// use gardal::{TokenBucket, Limit};
 /// use std::num::NonZeroU32;
 ///
-/// let limit = RateLimit::per_second_and_burst(
+/// let limit = Limit::per_second_and_burst(
 ///     NonZeroU32::new(10).unwrap(),
 ///     NonZeroU32::new(20).unwrap()
 /// );
@@ -44,7 +44,7 @@ pub const UNLIMITED_BUCKET: Option<TokenBucket> = const { None };
 pub struct TokenBucket<S = PaddedAtomicStorage, C = StdClock> {
     bucket: TokenBucketStorage<S>,
     clock: C,
-    limit: RateLimit,
+    limit: Limit,
 }
 
 impl TokenBucket<AtomicStorage, StdClock> {
@@ -59,13 +59,13 @@ impl TokenBucket<AtomicStorage, StdClock> {
     /// # Examples
     ///
     /// ```rust
-    /// use gardal::{TokenBucket, RateLimit};
+    /// use gardal::{TokenBucket, Limit};
     /// use std::num::NonZeroU32;
     ///
-    /// let limit = RateLimit::per_second(NonZeroU32::new(100).unwrap());
+    /// let limit = Limit::per_second(NonZeroU32::new(100).unwrap());
     /// let bucket = TokenBucket::new(limit);
     /// ```
-    pub fn new(limit: RateLimit) -> Self {
+    pub fn new(limit: Limit) -> Self {
         TokenBucket::<AtomicStorage>::from_parts(limit, StdClock::default())
     }
 }
@@ -84,14 +84,14 @@ impl<C: Clock> TokenBucket<PaddedAtomicStorage, C> {
     /// # Examples
     ///
     /// ```rust
-    /// use gardal::{TokenBucket, RateLimit, ManualClock};
+    /// use gardal::{TokenBucket, Limit, ManualClock};
     /// use std::num::NonZeroU32;
     ///
-    /// let limit = RateLimit::per_second(NonZeroU32::new(10).unwrap());
+    /// let limit = Limit::per_second(NonZeroU32::new(10).unwrap());
     /// let clock = ManualClock::new(0.0);
     /// let bucket = TokenBucket::with_clock(limit, clock);
     /// ```
-    pub fn with_clock(limit: RateLimit, clock: C) -> Self {
+    pub fn with_clock(limit: Limit, clock: C) -> Self {
         let storage = PaddedAtomicStorage::new(clock.now());
         Self {
             bucket: TokenBucketStorage::<PaddedAtomicStorage>::new(storage),
@@ -111,7 +111,7 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
     ///
     /// * `limit` - The rate and burst configuration for the bucket
     /// * `clock` - The clock implementation to use for timing
-    pub fn from_parts(limit: RateLimit, clock: C) -> Self {
+    pub fn from_parts(limit: Limit, clock: C) -> Self {
         // let storage = S::new(clock.now());
         let storage = S::new(0.0);
         Self {
@@ -128,7 +128,7 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
     /// # Arguments
     ///
     /// * `limit` - The new rate and burst configuration
-    pub fn reset(&mut self, limit: RateLimit) {
+    pub fn reset(&mut self, limit: Limit) {
         let now = self.clock.now();
         let available = self
             .bucket
@@ -149,7 +149,7 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
     /// # Returns
     ///
     /// A new token bucket with the updated configuration
-    pub fn update_limit(self, limit: RateLimit) -> Self {
+    pub fn update_limit(self, limit: Limit) -> Self {
         let now = self.clock.now();
         let available = self
             .bucket
@@ -188,10 +188,10 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
     /// # Examples
     ///
     /// ```rust
-    /// use gardal::{TokenBucket, RateLimit};
+    /// use gardal::{TokenBucket, Limit};
     /// use std::num::NonZeroU32;
     ///
-    /// let limit = RateLimit::per_second(NonZeroU32::new(10).unwrap());
+    /// let limit = Limit::per_second(NonZeroU32::new(10).unwrap());
     /// let bucket = TokenBucket::new(limit);
     ///
     /// if let Some(tokens) = bucket.consume(NonZeroU32::new(5).unwrap()) {
@@ -254,10 +254,10 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
     /// # Examples
     ///
     /// ```rust
-    /// use gardal::{TokenBucket, RateLimit};
+    /// use gardal::{TokenBucket, Limit};
     /// use std::num::NonZeroU32;
     ///
-    /// let limit = RateLimit::per_second(NonZeroU32::new(10).unwrap());
+    /// let limit = Limit::per_second(NonZeroU32::new(10).unwrap());
     /// let bucket = TokenBucket::new(limit);
     ///
     /// match bucket.try_consume(NonZeroU32::new(5).unwrap()) {
@@ -306,10 +306,10 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
     /// # Examples
     ///
     /// ```rust
-    /// use gardal::{TokenBucket, RateLimit};
+    /// use gardal::{TokenBucket, Limit};
     /// use std::num::NonZeroU32;
     ///
-    /// let limit = RateLimit::per_second(NonZeroU32::new(10).unwrap());
+    /// let limit = Limit::per_second(NonZeroU32::new(10).unwrap());
     /// let bucket = TokenBucket::new(limit);
     ///
     /// // Request 100 tokens, but only get what's available
@@ -336,10 +336,10 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
     /// # Examples
     ///
     /// ```rust
-    /// use gardal::{TokenBucket, RateLimit};
+    /// use gardal::{TokenBucket, Limit};
     /// use std::num::NonZeroU32;
     ///
-    /// let limit = RateLimit::per_second(NonZeroU32::new(10).unwrap());
+    /// let limit = Limit::per_second(NonZeroU32::new(10).unwrap());
     /// let bucket = TokenBucket::new(limit);
     ///
     /// // Return 5 tokens to the bucket
@@ -369,10 +369,10 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
     /// # Examples
     ///
     /// ```rust
-    /// use gardal::{TokenBucket, RateLimit};
+    /// use gardal::{TokenBucket, Limit};
     /// use std::num::NonZeroU32;
     ///
-    /// let limit = RateLimit::per_second_and_burst(
+    /// let limit = Limit::per_second_and_burst(
     ///     NonZeroU32::new(10).unwrap(),
     ///     NonZeroU32::new(20).unwrap()
     /// );
@@ -479,8 +479,8 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
     ///
     /// # Returns
     ///
-    /// Reference to the [`RateLimit`] configuration
-    pub fn limit(&self) -> &RateLimit {
+    /// Reference to the [`Limit`] configuration
+    pub fn limit(&self) -> &Limit {
         &self.limit
     }
 
@@ -507,7 +507,7 @@ mod tests {
     fn basics() {
         let clock = Arc::new(ManualClock::default());
         // initially, the bucket is empty
-        let limit = RateLimit::per_second_and_burst(nonzero!(10u32), nonzero!(20u32));
+        let limit = Limit::per_second_and_burst(nonzero!(10u32), nonzero!(20u32));
         let tb = TokenBucket::<PaddedAtomicStorage, _>::with_clock(limit, Arc::clone(&clock));
         // initially empty
         assert!(tb.consume(nonzero!(1u32)).is_none());
@@ -535,7 +535,7 @@ mod tests {
     fn basics_dynamic() {
         let clock = Arc::new(ManualClock::default());
         // initially, the bucket is empty
-        let limit = RateLimit::per_second_and_burst(nonzero!(10u32), nonzero!(20u32));
+        let limit = Limit::per_second_and_burst(nonzero!(10u32), nonzero!(20u32));
         let mut tb = TokenBucket::<PaddedAtomicStorage, _>::with_clock(limit, Arc::clone(&clock));
         // initially empty
         assert!(tb.consume(nonzero!(1u32)).is_none());
@@ -545,10 +545,7 @@ mod tests {
         assert_eq!(10.0, tb.available());
         assert_eq!(tb.balance(), tb.available());
         // change the rate, burst, and reset the available tokens in the bucket
-        tb.reset(RateLimit::per_second_and_burst(
-            nonzero!(1u32),
-            nonzero!(50u32),
-        ));
+        tb.reset(Limit::per_second_and_burst(nonzero!(1u32), nonzero!(50u32)));
         assert_eq!(10.0, tb.available());
         assert_eq!(10.0, tb.balance());
         assert_eq!(1.0, tb.limit().rate_per_second());
@@ -562,7 +559,7 @@ mod tests {
     fn fractional() {
         let clock = Arc::new(ManualClock::default());
         // initially, the bucket is empty
-        let limit = RateLimit::per_minute(nonzero!(30u32)).with_burst(nonzero!(20u32));
+        let limit = Limit::per_minute(nonzero!(30u32)).with_burst(nonzero!(20u32));
         let tb = TokenBucket::<PaddedAtomicStorage, _>::with_clock(limit, Arc::clone(&clock));
         // initially empty
         assert!(tb.consume(nonzero!(1u32)).is_none());
@@ -591,7 +588,7 @@ mod tests {
     #[test]
     fn saturating_consume() {
         let clock = Arc::new(ManualClock::default());
-        let limit = RateLimit::per_second_and_burst(nonzero!(5u32), nonzero!(10u32));
+        let limit = Limit::per_second_and_burst(nonzero!(5u32), nonzero!(10u32));
         let tb = TokenBucket::<PaddedAtomicStorage, _>::with_clock(limit, Arc::clone(&clock));
         clock.set(1.0);
         // after one second, we have 5 tokens available, so that's what we can consume, but we can
@@ -609,7 +606,7 @@ mod tests {
     #[test]
     fn wait_to_consume() {
         let clock = Arc::new(ManualClock::default());
-        let limit = RateLimit::per_minute(nonzero!(30u32)).with_burst(nonzero!(10u32));
+        let limit = Limit::per_minute(nonzero!(30u32)).with_burst(nonzero!(10u32));
         let tb = TokenBucket::<PaddedAtomicStorage, _>::with_clock(limit, Arc::clone(&clock));
         // at t=0 bucket empty; borrow 5 tokens should require waiting for 10.0 seconds. Note that
         // we didn't consume anything as a result.
@@ -626,7 +623,7 @@ mod tests {
     #[test]
     fn borrow_future() {
         let clock = Arc::new(ManualClock::default());
-        let limit = RateLimit::per_minute(nonzero!(30u32)).with_burst(nonzero!(10u32));
+        let limit = Limit::per_minute(nonzero!(30u32)).with_burst(nonzero!(10u32));
         let tb = TokenBucket::<PaddedAtomicStorage, _>::with_clock(limit, Arc::clone(&clock));
         // at t=0 bucket empty; borrow 5 tokens should require waiting for 10.0 seconds
         let maybe_wait = tb.consume_with_borrow(nonzero!(5u32));
@@ -677,7 +674,7 @@ mod tests {
     fn concurrent_consume_owned() {
         // shared with arc and atomic (owned)
         let clock = Arc::new(ManualClock::default());
-        let limit = RateLimit::per_second_and_burst(nonzero!(1000u32), nonzero!(10_000u32));
+        let limit = Limit::per_second_and_burst(nonzero!(1000u32), nonzero!(10_000u32));
         let tb = TokenBucket::<PaddedAtomicStorage, _>::with_clock(limit, Arc::clone(&clock));
         clock.set(10.0);
         let tb = std::sync::Arc::new(tb);
@@ -701,7 +698,7 @@ mod tests {
     fn concurrent_consume() {
         // shared with atomic (reference)
         let clock = Arc::new(ManualClock::default());
-        let limit = RateLimit::per_second_and_burst(nonzero!(1000u32), nonzero!(10_000u32));
+        let limit = Limit::per_second_and_burst(nonzero!(1000u32), nonzero!(10_000u32));
         let tb = TokenBucket::<PaddedAtomicStorage, _>::with_clock(limit, Arc::clone(&clock));
         std::thread::scope(|s| {
             clock.set(10.0);

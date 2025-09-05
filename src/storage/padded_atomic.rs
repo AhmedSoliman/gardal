@@ -20,11 +20,11 @@ use super::cache_padded::CachePadded;
 /// # Examples
 ///
 /// ```rust
-/// use gardal::{TokenBucket, RateLimit};
+/// use gardal::{TokenBucket, Limit};
 /// use std::num::NonZeroU32;
 ///
 /// // PaddedAtomicStorage is the default storage type
-/// let limit = RateLimit::per_second(NonZeroU32::new(100).unwrap());
+/// let limit = Limit::per_second(NonZeroU32::new(100).unwrap());
 /// let bucket = TokenBucket::new(limit);
 /// ```
 pub struct PaddedAtomicStorage(CachePadded<AtomicF64>);
@@ -65,11 +65,11 @@ impl TimeStorage for PaddedAtomicStorage {
 /// # Examples
 ///
 /// ```rust
-/// use gardal::{TokenBucket, RateLimit};
+/// use gardal::{TokenBucket, Limit};
 /// use std::num::NonZeroU32;
 ///
 /// // PaddedAtomicStorage is the default storage type
-/// let limit = RateLimit::per_second(NonZeroU32::new(100).unwrap());
+/// let limit = Limit::per_second(NonZeroU32::new(100).unwrap());
 /// let bucket = TokenBucket::new(limit);
 /// ```
 #[derive(Clone)]
