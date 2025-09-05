@@ -70,10 +70,10 @@ pub trait Clock {
 /// # Examples
 ///
 /// ```rust
-/// use gardal::{TokenBucket, RateLimit, StdClock};
+/// use gardal::{TokenBucket, Limit, StdClock};
 /// use std::num::NonZeroU32;
 ///
-/// let limit = RateLimit::per_second(NonZeroU32::new(100).unwrap());
+/// let limit = Limit::per_second(NonZeroU32::new(100).unwrap());
 /// let clock = StdClock::default();
 /// let bucket = TokenBucket::with_clock(limit, clock);
 /// ```
@@ -108,10 +108,10 @@ impl Clock for StdClock {
 /// ```rust
 /// # #[cfg(feature = "quanta")]
 /// # {
-/// use gardal::{TokenBucket, RateLimit, QuantaClock};
+/// use gardal::{TokenBucket, Limit, QuantaClock};
 /// use std::num::NonZeroU32;
 ///
-/// let limit = RateLimit::per_second(NonZeroU32::new(100).unwrap());
+/// let limit = Limit::per_second(NonZeroU32::new(100).unwrap());
 /// let clock = QuantaClock::default();
 /// let bucket = TokenBucket::with_clock(limit, clock);
 /// # }
@@ -158,10 +158,10 @@ impl Clock for QuantaClock {
 /// ```rust
 /// # #[cfg(feature = "tokio")]
 /// # {
-/// use gardal::{TokenBucket, RateLimit, TokioClock};
+/// use gardal::{TokenBucket, Limit, TokioClock};
 /// use std::num::NonZeroU32;
 ///
-/// let limit = RateLimit::per_second(NonZeroU32::new(100).unwrap());
+/// let limit = Limit::per_second(NonZeroU32::new(100).unwrap());
 /// let clock = TokioClock::default();
 /// let bucket = TokenBucket::with_clock(limit, clock);
 /// # }
@@ -204,10 +204,10 @@ impl Clock for TokioClock {
 /// ```rust
 /// # #[cfg(feature = "quanta")]
 /// # {
-/// use gardal::{TokenBucket, RateLimit, FastClock};
+/// use gardal::{TokenBucket, Limit, FastClock};
 /// use std::num::NonZeroU32;
 ///
-/// let limit = RateLimit::per_second(NonZeroU32::new(1000).unwrap());
+/// let limit = Limit::per_second(NonZeroU32::new(1000).unwrap());
 /// let clock = FastClock::default();
 /// let bucket = TokenBucket::with_clock(limit, clock);
 /// # }
@@ -261,11 +261,11 @@ impl Clock for FastClock {
 /// # Examples
 ///
 /// ```rust
-/// use gardal::{TokenBucket, RateLimit, ManualClock};
+/// use gardal::{TokenBucket, Limit, ManualClock};
 /// use std::num::NonZeroU32;
 /// use std::sync::Arc;
 ///
-/// let limit = RateLimit::per_second(NonZeroU32::new(10).unwrap());
+/// let limit = Limit::per_second(NonZeroU32::new(10).unwrap());
 /// let clock = Arc::new(ManualClock::new(0.0));
 /// let bucket = TokenBucket::with_clock(limit, Arc::clone(&clock));
 ///

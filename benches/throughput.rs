@@ -3,14 +3,14 @@ use std::time::Duration;
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use gardal::{
-    AtomicStorage, FastClock, LocalStorage, ManualClock, PaddedAtomicStorage, QuantaClock,
-    RateLimit, StdClock, TokenBucket,
+    AtomicStorage, FastClock, Limit, LocalStorage, ManualClock, PaddedAtomicStorage, QuantaClock,
+    StdClock, TokenBucket,
 };
 use nonzero_ext::nonzero;
 
 fn bench_consume(c: &mut Criterion) {
     let clock = quanta::Clock::new();
-    let limit = RateLimit::per_second(nonzero!(10_000u32));
+    let limit = Limit::per_second(nonzero!(10_000u32));
     let _quanta_thread = quanta::Upkeep::new_with_clock(Duration::from_micros(10), clock.clone())
         .start()
         .unwrap();
@@ -80,7 +80,7 @@ fn multi_threaded(c: &mut Criterion) {
         .start()
         .unwrap();
     let clock = FastClock::new(clock);
-    let limit = RateLimit::per_second(nonzero!(10_000u32));
+    let limit = Limit::per_second(nonzero!(10_000u32));
     let mut group = c.benchmark_group("multi_threaded");
     group
         .throughput(Throughput::Elements(1))
@@ -138,7 +138,7 @@ fn multi_threaded2(c: &mut Criterion) {
         .start()
         .unwrap();
     let clock = FastClock::new(clock);
-    let limit = RateLimit::per_second(nonzero!(50u32));
+    let limit = Limit::per_second(nonzero!(50u32));
     let mut group = c.benchmark_group("multi_threaded2");
     group
         .throughput(Throughput::Elements(1))

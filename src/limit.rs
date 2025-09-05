@@ -11,36 +11,36 @@ const SECONDS_PER_HOUR: f64 = 3600.0;
 /// # Examples
 ///
 /// ```rust
-/// use gardal::RateLimit;
+/// use gardal::Limit;
 /// use std::num::NonZeroU32;
 ///
 /// // 100 requests per second, burst of 200
-/// let limit = RateLimit::per_second_and_burst(
+/// let limit = Limit::per_second_and_burst(
 ///     NonZeroU32::new(100).unwrap(),
 ///     NonZeroU32::new(200).unwrap()
 /// );
 ///
 /// // 60 requests per minute (1 per second), burst equals rate
-/// let limit = RateLimit::per_minute(NonZeroU32::new(60).unwrap());
+/// let limit = Limit::per_minute(NonZeroU32::new(60).unwrap());
 /// ```
 #[derive(Clone, Copy)]
-pub struct RateLimit {
+pub struct Limit {
     pub(crate) rate: f64,
     pub(crate) burst: f64,
 }
 
-impl std::fmt::Debug for RateLimit {
+impl std::fmt::Debug for Limit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "RateLimit(rate_per_second={}, burst={})",
+            "Limit(rate_per_second={}, burst={})",
             self.rate_per_second(),
             self.burst()
         )
     }
 }
 
-impl RateLimit {
+impl Limit {
     /// Creates a rate limit with the specified tokens per second.
     ///
     /// The burst capacity is set equal to the rate, allowing for one second's
@@ -53,10 +53,10 @@ impl RateLimit {
     /// # Examples
     ///
     /// ```rust
-    /// use gardal::RateLimit;
+    /// use gardal::Limit;
     /// use std::num::NonZeroU32;
     ///
-    /// let limit = RateLimit::per_second(NonZeroU32::new(100).unwrap());
+    /// let limit = Limit::per_second(NonZeroU32::new(100).unwrap());
     /// assert_eq!(limit.rate_per_second(), 100.0);
     /// assert_eq!(limit.burst(), NonZeroU32::new(100).unwrap());
     /// ```
@@ -77,10 +77,10 @@ impl RateLimit {
     /// # Examples
     ///
     /// ```rust
-    /// use gardal::RateLimit;
+    /// use gardal::Limit;
     /// use std::num::NonZeroU32;
     ///
-    /// let limit = RateLimit::per_second_and_burst(
+    /// let limit = Limit::per_second_and_burst(
     ///     NonZeroU32::new(10).unwrap(),
     ///     NonZeroU32::new(50).unwrap()
     /// );
@@ -105,10 +105,10 @@ impl RateLimit {
     /// # Examples
     ///
     /// ```rust
-    /// use gardal::RateLimit;
+    /// use gardal::Limit;
     /// use std::num::NonZeroU32;
     ///
-    /// let limit = RateLimit::per_minute(NonZeroU32::new(60).unwrap());
+    /// let limit = Limit::per_minute(NonZeroU32::new(60).unwrap());
     /// assert_eq!(limit.rate_per_second(), 1.0);
     /// assert_eq!(limit.rate_per_minute(), 60.0);
     /// ```
@@ -130,10 +130,10 @@ impl RateLimit {
     /// # Examples
     ///
     /// ```rust
-    /// use gardal::RateLimit;
+    /// use gardal::Limit;
     /// use std::num::NonZeroU32;
     ///
-    /// let limit = RateLimit::per_hour(NonZeroU32::new(3600).unwrap());
+    /// let limit = Limit::per_hour(NonZeroU32::new(3600).unwrap());
     /// assert_eq!(limit.rate_per_second(), 1.0);
     /// assert_eq!(limit.rate_per_hour(), 3600.0);
     /// ```
@@ -153,10 +153,10 @@ impl RateLimit {
     /// # Examples
     ///
     /// ```rust
-    /// use gardal::RateLimit;
+    /// use gardal::Limit;
     /// use std::num::NonZeroU32;
     ///
-    /// let limit = RateLimit::per_second(NonZeroU32::new(10).unwrap())
+    /// let limit = Limit::per_second(NonZeroU32::new(10).unwrap())
     ///     .with_burst(NonZeroU32::new(100).unwrap());
     /// assert_eq!(limit.rate_per_second(), 10.0);
     /// assert_eq!(limit.burst(), NonZeroU32::new(100).unwrap());

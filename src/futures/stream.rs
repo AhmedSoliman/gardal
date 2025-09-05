@@ -7,14 +7,14 @@ use futures::Stream;
 use pin_project_lite::pin_project;
 
 use super::timer::{Sleep, sleep};
-use crate::RateLimit;
+use crate::Limit;
 use crate::storage::TimeStorage;
 use crate::{bucket::TokenBucket, clock::Clock};
 #[cfg(not(feature = "tokio-hrtime"))]
 use tokio::time::Instant;
 
 pin_project! {
-    /// A stream wrapper that applies rate limiting using a token bucket.
+    /// A stream wrapper that applies throttling using a token bucket.
     ///
     /// This stream consumes one token per item and will delay items when
     /// tokens are not available. It uses borrowing from future capacity
@@ -23,18 +23,18 @@ pin_project! {
     /// # Examples
     ///
     /// ```rust
-    /// use gardal::{TokenBucket, RateLimit};
-    /// use gardal::futures::RateLimitedStream;
+    /// use gardal::{TokenBucket, Limit};
+    /// use gardal::futures::ThrottledStream;
     /// use futures::stream;
     /// use std::num::NonZeroU32;
     ///
-    /// let limit = RateLimit::per_second(NonZeroU32::new(10).unwrap());
+    /// let limit = Limit::per_second(NonZeroU32::new(10).unwrap());
     /// let bucket = TokenBucket::new(limit);
     /// let stream = stream::iter(0..100);
     ///
-    /// let rate_limited = RateLimitedStream::new(stream, bucket);
+    /// let throttled = ThrottledStream::new(stream, bucket);
     /// ```
-    pub struct RateLimitedStream<S, ST, C>
+    pub struct ThrottledStream<S, ST, C>
     where
         S: Stream,
         ST: TimeStorage,
@@ -48,7 +48,7 @@ pin_project! {
     }
 }
 
-impl<S, ST, C> RateLimitedStream<S, ST, C>
+impl<S, ST, C> ThrottledStream<S, ST, C>
 where
     S: Stream,
     ST: TimeStorage,
@@ -58,8 +58,8 @@ where
     ///
     /// # Arguments
     ///
-    /// * `stream` - The underlying stream to rate limit
-    /// * `bucket` - The token bucket to use for rate limiting
+    /// * `stream` - The underlying stream to throttle
+    /// * `bucket` - The token bucket to use for throttling
     pub fn new(stream: S, bucket: impl Into<Option<TokenBucket<ST, C>>>) -> Self {
         Self {
             stream,
@@ -68,8 +68,8 @@ where
         }
     }
 
-    /// Returns a reference to the current rate limit configuration.
-    pub fn limit(&self) -> Option<&RateLimit> {
+    /// Returns a reference to the current throttling configuration.
+    pub fn limit(&self) -> Option<&Limit> {
         self.bucket.as_ref().map(|b| b.limit())
     }
 
@@ -99,7 +99,7 @@ where
     }
 }
 
-impl<S, ST, C> Stream for RateLimitedStream<S, ST, C>
+impl<S, ST, C> Stream for ThrottledStream<S, ST, C>
 where
     S: Stream,
     ST: TimeStorage,
@@ -155,7 +155,7 @@ where
 }
 
 pin_project! {
-    /// A stream that is rate limited by a token bucket with weighted consumption.
+    /// A stream that is throttled by a token bucket with weighted consumption.
     /// Each item can consume a different number of tokens based on a weight function.
     pub struct WeightedStream<S, ST, C, F>
     where
@@ -185,19 +185,19 @@ where
     ///
     /// # Arguments
     ///
-    /// * `stream` - The underlying stream to rate limit
-    /// * `bucket` - The token bucket for rate limiting
+    /// * `stream` - The underlying stream to throttle
+    /// * `bucket` - The token bucket for throttling
     /// * `weight_fn` - A function that determines how many tokens each item consumes
     ///
     /// # Examples
     ///
     /// ```rust
     /// use gardal::futures::WeightedStream;
-    /// use gardal::{LocalStorage, RateLimit, TokioClock, TokenBucket};
+    /// use gardal::{LocalStorage, Limit, TokioClock, TokenBucket};
     /// use futures::stream;
     /// use std::num::NonZeroU32;
     ///
-    /// let limit = RateLimit::per_second_and_burst(NonZeroU32::new(10).unwrap(), NonZeroU32::new(10).unwrap());
+    /// let limit = Limit::per_second_and_burst(NonZeroU32::new(10).unwrap(), NonZeroU32::new(10).unwrap());
     /// let bucket = TokenBucket::<LocalStorage, _>::from_parts(limit, TokioClock::default());
     ///
     /// let stream = stream::iter(vec!["small", "large", "medium"]);
@@ -215,8 +215,8 @@ where
         }
     }
 
-    /// Returns the current rate limit.
-    pub fn limit(&self) -> &RateLimit {
+    /// Returns the current throttling limit.
+    pub fn limit(&self) -> &Limit {
         self.bucket.limit()
     }
 
@@ -298,7 +298,7 @@ where
 #[cfg(all(test, not(feature = "tokio-hrtime")))]
 mod tests {
     use super::*;
-    use crate::RateLimit;
+    use crate::Limit;
     use crate::clock::TokioClock;
     use crate::storage::local::LocalStorage;
     use std::time::Duration;
@@ -311,10 +311,10 @@ mod tests {
     async fn test_throttled_stream() {
         let start = tokio::time::Instant::now();
         let stream = stream::iter(vec![1, 2, 3, 4, 5]);
-        let limit = RateLimit::per_second_and_burst(nonzero!(1u32), nonzero!(1u32));
+        let limit = Limit::per_second_and_burst(nonzero!(1u32), nonzero!(1u32));
         let bucket = TokenBucket::<LocalStorage, _>::from_parts(limit, TokioClock::default());
 
-        let mut throttled_stream = std::pin::pin!(RateLimitedStream::new(stream, bucket));
+        let mut throttled_stream = std::pin::pin!(ThrottledStream::new(stream, bucket));
 
         let mut results = vec![];
         while let Some(item) = throttled_stream.next().await {
@@ -329,10 +329,10 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_throttled_stream_burst() {
         let stream = stream::iter(vec![1, 2, 3, 4, 5]);
-        let limit = RateLimit::per_second_and_burst(nonzero!(1u32), nonzero!(3u32));
+        let limit = Limit::per_second_and_burst(nonzero!(1u32), nonzero!(3u32));
         let bucket = TokenBucket::<LocalStorage, _>::from_parts(limit, TokioClock::default());
 
-        let mut throttled_stream = std::pin::pin!(RateLimitedStream::new(stream, bucket));
+        let mut throttled_stream = std::pin::pin!(ThrottledStream::new(stream, bucket));
 
         let mut results = vec![];
         let start = tokio::time::Instant::now();
@@ -348,10 +348,10 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_throttled_stream_all_ready() {
         let stream = stream::iter(vec![1, 2, 3, 4, 5]);
-        let limit = RateLimit::per_second(nonzero!(100000u32)).with_burst(nonzero!(1u32));
+        let limit = Limit::per_second(nonzero!(100000u32)).with_burst(nonzero!(1u32));
         let bucket = TokenBucket::<LocalStorage, _>::from_parts(limit, TokioClock::default());
 
-        let mut throttled_stream = std::pin::pin!(RateLimitedStream::new(stream, bucket));
+        let mut throttled_stream = std::pin::pin!(ThrottledStream::new(stream, bucket));
 
         let mut results = vec![];
         let start = tokio::time::Instant::now();
@@ -369,10 +369,10 @@ mod tests {
         let stream = stream::iter(vec![1, 2, 3, 4, 5])
             .throttle(Duration::from_secs(2))
             .chain(stream::iter(vec![6, 7, 8, 9]));
-        let limit = RateLimit::per_second_and_burst(nonzero!(1u32), nonzero!(3u32));
+        let limit = Limit::per_second_and_burst(nonzero!(1u32), nonzero!(3u32));
         let bucket = TokenBucket::<LocalStorage, _>::from_parts(limit, TokioClock::default());
 
-        let mut throttled_stream = std::pin::pin!(RateLimitedStream::new(stream, bucket));
+        let mut throttled_stream = std::pin::pin!(ThrottledStream::new(stream, bucket));
 
         let mut results = vec![];
         let start = tokio::time::Instant::now();
@@ -389,7 +389,7 @@ mod tests {
     async fn test_weighted_stream_uniform_weight() {
         let start = tokio::time::Instant::now();
         let stream = stream::iter(vec![1, 2, 3, 4, 5]);
-        let limit = RateLimit::per_second_and_burst(nonzero!(1u32), nonzero!(1u32));
+        let limit = Limit::per_second_and_burst(nonzero!(1u32), nonzero!(1u32));
         let bucket = TokenBucket::<LocalStorage, _>::from_parts(limit, TokioClock::default());
 
         let mut weighted_stream =
@@ -409,7 +409,7 @@ mod tests {
     async fn test_weighted_stream_variable_weight() {
         let start = tokio::time::Instant::now();
         let stream = stream::iter(vec![1, 2, 3, 4, 5]);
-        let limit = RateLimit::per_second_and_burst(nonzero!(2u32), nonzero!(2u32));
+        let limit = Limit::per_second_and_burst(nonzero!(2u32), nonzero!(2u32));
         let bucket = TokenBucket::<LocalStorage, _>::from_parts(limit, TokioClock::default());
 
         let mut weighted_stream = std::pin::pin!(WeightedStream::new(stream, bucket, |&item| {
@@ -435,7 +435,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_weighted_stream_with_burst() {
         let stream = stream::iter(vec![1, 2, 3, 4, 5]);
-        let limit = RateLimit::per_second_and_burst(nonzero!(1u32), nonzero!(5u32));
+        let limit = Limit::per_second_and_burst(nonzero!(1u32), nonzero!(5u32));
         let bucket = TokenBucket::<LocalStorage, _>::from_parts(limit, TokioClock::default());
 
         let mut weighted_stream = std::pin::pin!(WeightedStream::new(stream, bucket, |&item| {
@@ -458,7 +458,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_weighted_stream_empty() {
         let stream = stream::iter(Vec::<i32>::new());
-        let limit = RateLimit::per_second_and_burst(nonzero!(1u32), nonzero!(1u32));
+        let limit = Limit::per_second_and_burst(nonzero!(1u32), nonzero!(1u32));
         let bucket = TokenBucket::<LocalStorage, _>::from_parts(limit, TokioClock::default());
 
         let mut weighted_stream =
@@ -475,7 +475,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_weighted_stream_single_item() {
         let stream = stream::iter(vec![42]);
-        let limit = RateLimit::per_second_and_burst(nonzero!(10u32), nonzero!(10u32));
+        let limit = Limit::per_second_and_burst(nonzero!(10u32), nonzero!(10u32));
         let bucket = TokenBucket::<LocalStorage, _>::from_parts(limit, TokioClock::default());
 
         let mut weighted_stream =
@@ -497,7 +497,7 @@ mod tests {
     async fn test_weighted_stream_expensive_item_delayed() {
         // This test verifies that expensive items are properly delayed before being returned
         let stream = stream::iter(vec![10]); // Single expensive item
-        let limit = RateLimit::per_second_and_burst(nonzero!(1u32), nonzero!(10u32)); // Enough burst for the item
+        let limit = Limit::per_second_and_burst(nonzero!(1u32), nonzero!(10u32)); // Enough burst for the item
         let bucket = TokenBucket::<LocalStorage, _>::from_parts(limit, TokioClock::default());
 
         let mut weighted_stream = std::pin::pin!(WeightedStream::new(stream, bucket, |&item| {
@@ -524,7 +524,7 @@ mod tests {
     async fn test_weighted_stream_mixed_items_correct_timing() {
         // Test that cheap items come quickly and expensive items are delayed appropriately
         let stream = stream::iter(vec![1, 5, 1]); // cheap, expensive, cheap
-        let limit = RateLimit::per_second_and_burst(nonzero!(2u32), nonzero!(10u32)); // Enough burst capacity
+        let limit = Limit::per_second_and_burst(nonzero!(2u32), nonzero!(10u32)); // Enough burst capacity
         let bucket = TokenBucket::<LocalStorage, _>::from_parts(limit, TokioClock::default());
 
         let mut weighted_stream = std::pin::pin!(WeightedStream::new(stream, bucket, |&item| {
