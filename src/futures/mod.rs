@@ -1,29 +1,29 @@
-//! Async utilities for rate limiting with futures and streams.
+//! Async utilities for throttling with futures and streams.
 //!
-//! This module provides async-friendly wrappers and utilities for rate limiting
+//! This module provides async-friendly wrappers and utilities for throttling
 //! in async contexts. It requires the "async" feature to be enabled.
 //!
 //! # Features
 //!
-//! - [`RateLimitedStream`] - Rate limit any stream
-//! - [`RateLimitedStreamExt`] - Extension trait for easy stream rate limiting
+//! - [`ThrottledStream`] - Throttle any stream
+//! - [`StreamExt`] - Extension trait for easy stream throttling
 //!
 //! # Examples
 //!
 //! ```rust
 //! # #[cfg(feature = "async")]
 //! # {
-//! use gardal::{TokenBucket, RateLimit};
-//! use gardal::futures::RateLimitedStreamExt;
+//! use gardal::{TokenBucket, Limit};
+//! use gardal::futures::StreamExt;
 //! use futures::stream;
 //! use std::num::NonZeroU32;
 //!
 //! # async fn example() {
-//! let limit = RateLimit::per_second(NonZeroU32::new(10).unwrap());
+//! let limit = Limit::per_second(NonZeroU32::new(10).unwrap());
 //! let bucket = TokenBucket::new(limit);
 //!
 //! let stream = stream::iter(0..100)
-//!     .rate_limit(Some(bucket));
+//!     .throttle(Some(bucket));
 //! # }
 //! # }
 //! ```
@@ -31,7 +31,7 @@
 mod stream;
 mod timer;
 
-pub use stream::{RateLimitedStream, WeightedStream};
+pub use stream::{ThrottledStream, WeightedStream};
 
 use futures::Stream;
 use std::num::NonZeroU32;
@@ -39,9 +39,9 @@ use std::num::NonZeroU32;
 use crate::storage::TimeStorage;
 use crate::{Clock, TokenBucket};
 
-/// Extension trait for adding rate limiting to any stream.
+/// Extension trait for adding throttling to any stream.
 ///
-/// This trait provides a convenient way to apply rate limiting to existing streams
+/// This trait provides a convenient way to apply throttling to existing streams
 /// without having to manually wrap them.
 ///
 /// # Examples
@@ -49,77 +49,74 @@ use crate::{Clock, TokenBucket};
 /// ```rust
 /// # #[cfg(feature = "async")]
 /// # {
-/// use gardal::{TokenBucket, RateLimit};
-/// use gardal::futures::RateLimitedStreamExt;
+/// use gardal::{TokenBucket, Limit};
+/// use gardal::futures::StreamExt;
 /// use futures::stream;
 /// use std::num::NonZeroU32;
 ///
 /// # async fn example() {
-/// let limit = RateLimit::per_second(NonZeroU32::new(5).unwrap());
+/// let limit = Limit::per_second(NonZeroU32::new(5).unwrap());
 /// let bucket = TokenBucket::new(limit);
 ///
-/// let rate_limited = stream::iter(1..=10)
-///     .rate_limit(Some(bucket));
+/// let throttled = stream::iter(1..=10)
+///     .throttle(Some(bucket));
 /// # }
 /// # }
 /// ```
-pub trait RateLimitedStreamExt<S, ST, C>
+pub trait StreamExt<S, ST, C>
 where
     S: Stream,
     ST: TimeStorage,
     C: Clock,
 {
-    /// Applies rate limiting to this stream using the provided token bucket.
+    /// Applies throttling to this stream using the provided token bucket.
     ///
     /// # Arguments
     ///
-    /// * `bucket` - The token bucket to use for rate limiting. Pass `None` to disable rate limiting.
+    /// * `bucket` - The token bucket to use for throttling. Pass `None` to disable throttling.
     ///
     /// # Returns
     ///
-    /// A [`RateLimitedStream`] that wraps this stream with rate limiting
-    fn rate_limit(
-        self,
-        bucket: impl Into<Option<TokenBucket<ST, C>>>,
-    ) -> RateLimitedStream<S, ST, C>;
+    /// A [`ThrottledStream`] that wraps this stream with throttling
+    fn throttle(self, bucket: impl Into<Option<TokenBucket<ST, C>>>) -> ThrottledStream<S, ST, C>;
 
-    /// Applies weighted rate limiting to this stream using the provided token bucket.
+    /// Applies weighted throttling to this stream using the provided token bucket.
     ///
     /// Each item in the stream can consume a different number of tokens based on the
-    /// weight function. This allows for more sophisticated rate limiting where different
+    /// weight function. This allows for more sophisticated throttling where different
     /// items have different costs.
     ///
     /// # Arguments
     ///
-    /// * `bucket` - The token bucket to use for rate limiting
+    /// * `bucket` - The token bucket to use for throttling
     /// * `weight_fn` - A function that determines how many tokens each item consumes
     ///
     /// # Returns
     ///
-    /// A [`WeightedStream`] that wraps this stream with weighted rate limiting
+    /// A [`WeightedStream`] that wraps this stream with weighted throttling
     ///
     /// # Examples
     ///
     /// ```rust
     /// # #[cfg(feature = "async")]
     /// # {
-    /// use gardal::{TokenBucket, RateLimit};
-    /// use gardal::futures::RateLimitedStreamExt;
+    /// use gardal::{TokenBucket, Limit};
+    /// use gardal::futures::StreamExt;
     /// use futures::stream;
     /// use std::num::NonZeroU32;
     ///
     /// # async fn example() {
-    /// let limit = RateLimit::per_second(NonZeroU32::new(10).unwrap());
+    /// let limit = Limit::per_second(NonZeroU32::new(10).unwrap());
     /// let bucket = TokenBucket::new(limit);
     ///
-    /// let rate_limited = stream::iter(vec!["small", "large", "medium"])
-    ///     .rate_limit_weighted(bucket, |item: &&str| {
+    /// let throttled = stream::iter(vec!["small", "large", "medium"])
+    ///     .throttle_weighted(bucket, |item: &&str| {
     ///         NonZeroU32::new(item.len() as u32).unwrap_or(NonZeroU32::new(1).unwrap())
     ///     });
     /// # }
     /// # }
     /// ```
-    fn rate_limit_weighted<F>(
+    fn throttle_weighted<F>(
         self,
         bucket: TokenBucket<ST, C>,
         weight_fn: F,
@@ -128,20 +125,17 @@ where
         F: Fn(&S::Item) -> NonZeroU32;
 }
 
-impl<S, ST, C> RateLimitedStreamExt<S, ST, C> for S
+impl<S, ST, C> StreamExt<S, ST, C> for S
 where
     S: Stream,
     ST: TimeStorage,
     C: Clock,
 {
-    fn rate_limit(
-        self,
-        bucket: impl Into<Option<TokenBucket<ST, C>>>,
-    ) -> RateLimitedStream<S, ST, C> {
-        RateLimitedStream::new(self, bucket)
+    fn throttle(self, bucket: impl Into<Option<TokenBucket<ST, C>>>) -> ThrottledStream<S, ST, C> {
+        ThrottledStream::new(self, bucket)
     }
 
-    fn rate_limit_weighted<F>(
+    fn throttle_weighted<F>(
         self,
         bucket: TokenBucket<ST, C>,
         weight_fn: F,

@@ -3,7 +3,7 @@
 //! # Core Components
 //!
 //! - [`TokenBucket`] - The main token bucket implementation with pluggable storage and clock
-//! - [`RateLimit`] - Configuration for rate and burst limits
+//! - [`Limit`] - Configuration for rate and burst limits
 //! - [`Clock`] trait and implementations for time sources
 //! - Storage implementations for different concurrency needs
 //!
@@ -12,10 +12,10 @@
 //! ```rust
 //! use std::num::NonZeroU32;
 //!
-//! use gardal::{TokenBucket, RateLimit};
+//! use gardal::{TokenBucket, Limit};
 //!
 //! // Create a rate limit: 10 tokens per second, burst of 20
-//! let limit = RateLimit::per_second_and_burst(
+//! let limit = Limit::per_second_and_burst(
 //!     NonZeroU32::new(10).unwrap(),
 //!     NonZeroU32::new(20).unwrap()
 //! );
@@ -46,8 +46,8 @@ pub use clock::{Clock, ManualClock, StdClock};
 pub use clock::{FastClock, QuantaClock};
 pub use error::*;
 #[cfg(feature = "async")]
-pub use futures::RateLimitedStreamExt;
-pub use limit::RateLimit;
+pub use futures::StreamExt;
+pub use limit::Limit;
 pub use tokens::Tokens;
 
 pub use storage::{
