@@ -23,7 +23,7 @@
 //! let bucket = TokenBucket::new(limit);
 //!
 //! let stream = stream::iter(0..100)
-//!     .rate_limit(bucket);
+//!     .rate_limit(Some(bucket));
 //! # }
 //! # }
 //! ```
@@ -59,7 +59,7 @@ use crate::{Clock, TokenBucket};
 /// let bucket = TokenBucket::new(limit);
 ///
 /// let rate_limited = stream::iter(1..=10)
-///     .rate_limit(bucket);
+///     .rate_limit(Some(bucket));
 /// # }
 /// # }
 /// ```
@@ -73,12 +73,15 @@ where
     ///
     /// # Arguments
     ///
-    /// * `bucket` - The token bucket to use for rate limiting
+    /// * `bucket` - The token bucket to use for rate limiting. Pass `None` to disable rate limiting.
     ///
     /// # Returns
     ///
     /// A [`RateLimitedStream`] that wraps this stream with rate limiting
-    fn rate_limit(self, bucket: TokenBucket<ST, C>) -> RateLimitedStream<S, ST, C>;
+    fn rate_limit(
+        self,
+        bucket: impl Into<Option<TokenBucket<ST, C>>>,
+    ) -> RateLimitedStream<S, ST, C>;
 
     /// Applies weighted rate limiting to this stream using the provided token bucket.
     ///
@@ -131,7 +134,10 @@ where
     ST: TimeStorage,
     C: Clock,
 {
-    fn rate_limit(self, bucket: TokenBucket<ST, C>) -> RateLimitedStream<S, ST, C> {
+    fn rate_limit(
+        self,
+        bucket: impl Into<Option<TokenBucket<ST, C>>>,
+    ) -> RateLimitedStream<S, ST, C> {
         RateLimitedStream::new(self, bucket)
     }
 

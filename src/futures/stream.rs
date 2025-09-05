@@ -42,10 +42,9 @@ pin_project! {
     {
         #[pin]
         stream: S,
-        bucket: TokenBucket<ST, C>,
+        bucket: Option<TokenBucket<ST, C>>,
         #[pin]
         delay: Option<Sleep>,
-        ready_to_consume: bool,
     }
 }
 
@@ -61,25 +60,28 @@ where
     ///
     /// * `stream` - The underlying stream to rate limit
     /// * `bucket` - The token bucket to use for rate limiting
-    pub fn new(stream: S, bucket: TokenBucket<ST, C>) -> Self {
+    pub fn new(stream: S, bucket: impl Into<Option<TokenBucket<ST, C>>>) -> Self {
         Self {
             stream,
-            bucket,
-            ready_to_consume: true,
+            bucket: bucket.into(),
             delay: None,
         }
     }
 
     /// Returns a reference to the current rate limit configuration.
-    pub fn limit(&self) -> &RateLimit {
-        self.bucket.limit()
+    pub fn limit(&self) -> Option<&RateLimit> {
+        self.bucket.as_ref().map(|b| b.limit())
     }
 
     /// Returns the number of tokens currently available in the bucket.
     ///
     /// Returns zero if the bucket is in debt from borrowing.
     pub fn available(&self) -> f64 {
-        self.bucket.available()
+        if let Some(bucket) = &self.bucket {
+            bucket.available()
+        } else {
+            f64::MAX
+        }
     }
 
     /// Adds tokens back to the bucket.
@@ -91,7 +93,9 @@ where
     ///
     /// * `tokens` - Number of tokens to add
     pub fn add_tokens(&self, tokens: impl Into<f64>) {
-        self.bucket.add_tokens(tokens)
+        if let Some(bucket) = &self.bucket {
+            bucket.add_tokens(tokens)
+        }
     }
 }
 
@@ -106,38 +110,47 @@ where
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut this = self.project();
         // are we already waiting for a delay?
+        let coop = ready!(tokio::task::coop::poll_proceed(cx));
 
-        if let Some(delay) = this.delay.as_mut().as_pin_mut() {
-            ready!(delay.poll(cx));
-        }
+        if let Some(bucket) = &this.bucket {
+            if let Some(delay) = this.delay.as_mut().as_pin_mut() {
+                ready!(delay.poll(cx));
+            }
 
-        // deliver immediately
-        let next_item = ready!(this.stream.poll_next(cx));
+            // deliver immediately
+            let next_item = ready!(this.stream.poll_next(cx));
 
-        match this
-            .bucket
-            .consume_with_borrow(unsafe { NonZeroU32::new_unchecked(1) })
-            .unwrap()
-        {
-            Some(duration) => {
-                #[cfg(feature = "tokio-hrtime")]
-                {
-                    this.delay.set(Some(sleep(Duration::from(duration))));
-                }
-                #[cfg(not(feature = "tokio-hrtime"))]
-                {
-                    if let Some(delay) = this.delay.as_mut().as_pin_mut() {
-                        delay.reset(Instant::now() + Duration::from(duration));
-                    } else {
+            match bucket
+                .consume_with_borrow(unsafe { NonZeroU32::new_unchecked(1) })
+                .unwrap()
+            {
+                Some(duration) => {
+                    #[cfg(feature = "tokio-hrtime")]
+                    {
                         this.delay.set(Some(sleep(Duration::from(duration))));
                     }
+                    #[cfg(not(feature = "tokio-hrtime"))]
+                    {
+                        if let Some(delay) = this.delay.as_mut().as_pin_mut() {
+                            delay.reset(Instant::now() + Duration::from(duration));
+                        } else {
+                            this.delay.set(Some(sleep(Duration::from(duration))));
+                        }
+                    }
+                }
+                None => {
+                    this.delay.set(None);
                 }
             }
-            None => {
-                this.delay.set(None);
-            }
+
+            coop.made_progress();
+            Poll::Ready(next_item)
+        } else {
+            this.stream.poll_next(cx).map(|item| {
+                coop.made_progress();
+                item
+            })
         }
-        Poll::Ready(next_item)
     }
 }
 
@@ -229,6 +242,7 @@ where
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut this = self.project();
+        let coop = ready!(tokio::task::coop::poll_proceed(cx));
 
         // If we have a pending item and delay, wait for the delay to complete
         if this.pending_item.is_some() {
@@ -236,6 +250,7 @@ where
                 ready!(delay.poll(cx));
                 this.delay.set(None);
             }
+            coop.made_progress();
             // Return the pending item
             return Poll::Ready(this.pending_item.take());
         }
@@ -264,9 +279,12 @@ where
                         }
                         // Wake up to continue polling
                         cx.waker().wake_by_ref();
+
+                        coop.made_progress();
                         Poll::Pending
                     }
                     None => {
+                        coop.made_progress();
                         // No delay needed, return item immediately
                         Poll::Ready(Some(item))
                     }

@@ -1,6 +1,6 @@
 [package]
 name = "gardal"
-version = "0.0.1-alpha.3"
+version = "0.0.1-alpha.4"
 edition = "2024"
 license = "Apache-2.0 OR MIT"
 authors = ["Ahmed Farghal <me@asoli.dev>"]
@@ -12,12 +12,12 @@ readme = "README.md"
 
 [features]
 default = []
-async = ["tokio/sync", "tokio/time", "pin-project-lite", "futures"]
+async = ["tokio/sync", "tokio/time", "tokio/rt", "pin-project-lite", "futures"]
 
 [dependencies]
 quanta = {version = "0.12", optional = true}
 likely_stable = { version = "0.1.3" }
-tokio = { version = "1", features = ["sync", "time"], optional = true }
+tokio = { version = "1.47", features = ["sync", "time", "rt"], optional = true }
 pin-project-lite = { version = "0.2", optional = true }
 futures = { version = "0.3", optional = true }
 tokio-hrtime = { version = "0.1", optional = true }

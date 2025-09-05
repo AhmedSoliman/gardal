@@ -38,7 +38,7 @@ mod limit;
 mod storage;
 mod tokens;
 
-pub use bucket::TokenBucket;
+pub use bucket::{TokenBucket, UNLIMITED_BUCKET};
 #[cfg(feature = "tokio")]
 pub use clock::TokioClock;
 pub use clock::{Clock, ManualClock, StdClock};
@@ -52,7 +52,7 @@ pub use tokens::Tokens;
 
 pub use storage::{
     TimeStorage, atomic::AtomicSharedStorage, atomic::AtomicStorage, local::LocalStorage,
-    padded_atomic::PaddedAtomicStorage,
+    padded_atomic::PaddedAtomicSharedStorage, padded_atomic::PaddedAtomicStorage,
 };
 
 pub(crate) mod private {
