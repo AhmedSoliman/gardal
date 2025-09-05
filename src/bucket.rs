@@ -10,6 +10,8 @@ use crate::storage::padded_atomic::PaddedAtomicStorage;
 use crate::storage::{TimeStorage, TokenAcquisition, TokenBucketStorage};
 use crate::{Clock, RateLimit, StdClock, Tokens};
 
+pub const UNLIMITED_BUCKET: Option<TokenBucket> = const { None };
+
 /// A token bucket rate limiter with configurable storage and clock implementations.
 ///
 /// The token bucket algorithm allows for controlled rate limiting with burst capacity.
