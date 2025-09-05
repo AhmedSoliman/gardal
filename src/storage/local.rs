@@ -16,10 +16,10 @@ use super::TimeStorage;
 /// # Examples
 ///
 /// ```rust
-/// use gardal::{TokenBucket, RateLimit, LocalStorage, StdClock};
+/// use gardal::{TokenBucket, Limit, LocalStorage, StdClock};
 /// use std::num::NonZeroU32;
 ///
-/// let limit = RateLimit::per_second(NonZeroU32::new(100).unwrap());
+/// let limit = Limit::per_second(NonZeroU32::new(100).unwrap());
 /// let bucket = TokenBucket::<LocalStorage, _>::from_parts(limit, StdClock::default());
 /// ```
 #[derive(Debug)]

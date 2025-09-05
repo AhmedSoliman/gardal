@@ -10,10 +10,10 @@ use crate::clock::Nanos;
 /// # Examples
 ///
 /// ```rust
-/// use gardal::{TokenBucket, RateLimit};
+/// use gardal::{TokenBucket, Limit};
 /// use std::num::NonZeroU32;
 ///
-/// let limit = RateLimit::per_second(NonZeroU32::new(1).unwrap());
+/// let limit = Limit::per_second(NonZeroU32::new(1).unwrap());
 /// let bucket = TokenBucket::new(limit);
 ///
 /// match bucket.try_consume_one() {
@@ -36,10 +36,10 @@ pub struct RateLimited {
 /// # Examples
 ///
 /// ```rust
-/// use gardal::{TokenBucket, RateLimit};
+/// use gardal::{TokenBucket, Limit};
 /// use std::num::NonZeroU32;
 ///
-/// let limit = RateLimit::per_second_and_burst(
+/// let limit = Limit::per_second_and_burst(
 ///     NonZeroU32::new(10).unwrap(),
 ///     NonZeroU32::new(20).unwrap()
 /// );

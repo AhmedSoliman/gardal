@@ -2,15 +2,16 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
-use futures::{StreamExt, stream};
-use gardal::futures::RateLimitedStreamExt;
-use gardal::{PaddedAtomicSharedStorage, RateLimit, TokenBucket, TokioClock};
+use futures::StreamExt;
+use futures::stream;
+use gardal::futures::StreamExt as GardalStreamExt;
+use gardal::{Limit, PaddedAtomicSharedStorage, TokenBucket, TokioClock};
 use nonzero_ext::nonzero;
 use tokio::task::JoinSet;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
-    let limit = RateLimit::per_second_and_burst(nonzero!(1000000u32), nonzero!(100u32));
+    let limit = Limit::per_second_and_burst(nonzero!(1000000u32), nonzero!(100u32));
     let bucket =
         TokenBucket::<PaddedAtomicSharedStorage, _>::from_parts(limit, TokioClock::default());
 
@@ -23,9 +24,9 @@ async fn main() {
             let bucket = bucket.clone();
             let global_processed = global_processed.clone();
             async move {
-                let mut stream1 = std::pin::pin!(stream::repeat(1).rate_limit(bucket));
+                let mut stream1 = std::pin::pin!(stream::repeat(1).throttle(bucket));
                 // for unthrottled stream those have identical performance.
-                // let mut stream1 = std::pin::pin!(stream::repeat(1).rate_limit(None::<TokenBucket>));
+                // let mut stream1 = std::pin::pin!(stream::repeat(1).throttle(None::<TokenBucket>));
                 // let mut stream1 = std::pin::pin!(stream::iter(1..=1000000000));
                 let mut iter_start = tokio::time::Instant::now();
                 let mut processed = 0;
