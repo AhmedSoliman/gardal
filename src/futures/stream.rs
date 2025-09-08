@@ -97,6 +97,16 @@ where
             bucket.add_tokens(tokens)
         }
     }
+
+    /// Consumes the throttled stream, returning the underlying stream.
+    pub fn into_inner(self) -> S {
+        self.stream
+    }
+
+    /// Returns a reference to the underlying stream.
+    pub fn inner(&self) -> &S {
+        &self.stream
+    }
 }
 
 impl<S, ST, C> Stream for ThrottledStream<S, ST, C>
