@@ -96,12 +96,12 @@ where
         self.weighted_stream.inner()
     }
 
-    /// Returns a reference to the underlying stream.
+    /// Returns a mutable reference to the underlying stream.
     pub fn inner_mut(&mut self) -> &mut S {
         self.weighted_stream.inner_mut()
     }
 
-    /// Returns a reference to the underlying stream.
+    /// Returns a pinned mutable reference to the underlying stream.
     pub fn inner_pin_mut(self: Pin<&mut Self>) -> Pin<&mut S> {
         self.project().weighted_stream.inner_pin_mut()
     }
@@ -229,12 +229,12 @@ where
         &self.stream
     }
 
-    /// Returns a reference to the underlying stream.
+    /// Returns a mutable reference to the underlying stream.
     pub fn inner_mut(&mut self) -> &mut S {
         &mut self.stream
     }
 
-    /// Returns a reference to the underlying stream.
+    /// Returns a pinned mutable reference to the underlying stream.
     pub fn inner_pin_mut(self: Pin<&mut Self>) -> Pin<&mut S> {
         self.project().stream
     }
