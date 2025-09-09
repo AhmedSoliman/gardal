@@ -19,7 +19,7 @@ async fn main() {
     let program_start = print_start;
     let global_processed = Arc::new(AtomicU64::new(0));
     let mut handles = JoinSet::new();
-    for i in 1..=100 {
+    for i in 1..=1000 {
         handles.spawn({
             let bucket = bucket.clone();
             let global_processed = global_processed.clone();
