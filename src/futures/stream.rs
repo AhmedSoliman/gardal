@@ -107,6 +107,16 @@ where
     pub fn inner(&self) -> &S {
         &self.stream
     }
+
+    /// Returns a reference to the underlying stream.
+    pub fn inner_mut(&mut self) -> &mut S {
+        &mut self.stream
+    }
+
+    /// Returns a reference to the underlying stream.
+    pub fn inner_pin_mut(self: Pin<&mut Self>) -> Pin<&mut S> {
+        self.project().stream
+    }
 }
 
 impl<S, ST, C> Stream for ThrottledStream<S, ST, C>
@@ -176,7 +186,7 @@ pin_project! {
     {
         #[pin]
         stream: S,
-        bucket: TokenBucket<ST, C>,
+        bucket: Option<TokenBucket<ST, C>>,
         weight_fn: F,
         #[pin]
         delay: Option<Sleep>,
@@ -215,29 +225,69 @@ where
     ///     NonZeroU32::new(item.len() as u32).unwrap_or(NonZeroU32::new(1).unwrap())
     /// });
     /// ```
-    pub fn new(stream: S, bucket: TokenBucket<ST, C>, weight_fn: F) -> Self {
+    pub fn new(stream: S, bucket: impl Into<Option<TokenBucket<ST, C>>>, weight_fn: F) -> Self {
         Self {
             stream,
-            bucket,
+            bucket: bucket.into(),
             weight_fn,
             delay: None,
             pending_item: None,
         }
     }
 
-    /// Returns the current throttling limit.
-    pub fn limit(&self) -> &Limit {
-        self.bucket.limit()
+    /// Returns a reference to the current throttling configuration.
+    pub fn limit(&self) -> Option<&Limit> {
+        self.bucket.as_ref().map(|b| b.limit())
     }
 
-    /// Available tokens in the bucket. Zero if in debt.
+    /// Returns the number of tokens currently available in the bucket.
+    ///
+    /// Returns zero if the bucket is in debt from borrowing.
     pub fn available(&self) -> f64 {
-        self.bucket.available()
+        if let Some(bucket) = &self.bucket {
+            bucket.available()
+        } else {
+            f64::MAX
+        }
     }
 
-    /// Add tokens to the bucket.
+    /// Adds tokens back to the bucket.
+    ///
+    /// Useful for returning tokens from cancelled operations or manually
+    /// adding capacity.
+    ///
+    /// # Arguments
+    ///
+    /// * `tokens` - Number of tokens to add
     pub fn add_tokens(&self, tokens: impl Into<f64>) {
-        self.bucket.add_tokens(tokens)
+        if let Some(bucket) = &self.bucket {
+            bucket.add_tokens(tokens)
+        }
+    }
+
+    /// Returns true if the throttled stream has staged pending item to be delivered.
+    pub fn has_pending_item(&self) -> bool {
+        self.pending_item.is_some()
+    }
+
+    /// Consumes the throttled stream, returning the underlying stream.
+    pub fn into_inner(self) -> S {
+        self.stream
+    }
+
+    /// Returns a reference to the underlying stream.
+    pub fn inner(&self) -> &S {
+        &self.stream
+    }
+
+    /// Returns a reference to the underlying stream.
+    pub fn inner_mut(&mut self) -> &mut S {
+        &mut self.stream
+    }
+
+    /// Returns a reference to the underlying stream.
+    pub fn inner_pin_mut(self: Pin<&mut Self>) -> Pin<&mut S> {
+        self.project().stream
     }
 }
 
@@ -254,53 +304,59 @@ where
         let mut this = self.project();
         let coop = ready!(tokio::task::coop::poll_proceed(cx));
 
-        // If we have a pending item and delay, wait for the delay to complete
-        if this.pending_item.is_some() {
-            if let Some(delay) = this.delay.as_mut().as_pin_mut() {
-                ready!(delay.poll(cx));
-                this.delay.set(None);
+        if let Some(bucket) = &this.bucket {
+            // If we have a pending item and delay, wait for the delay to complete
+            if this.pending_item.is_some() {
+                if let Some(delay) = this.delay.as_mut().as_pin_mut() {
+                    ready!(delay.poll(cx));
+                    this.delay.set(None);
+                }
+                // Return the pending item
+                return Poll::Ready(this.pending_item.take());
             }
-            coop.made_progress();
-            // Return the pending item
-            return Poll::Ready(this.pending_item.take());
-        }
 
-        // Get the next item from the underlying stream
-        let next_item = ready!(this.stream.poll_next(cx));
+            // Get the next item from the underlying stream
+            let next_item = ready!(this.stream.poll_next(cx));
 
-        match next_item {
-            Some(item) => {
-                let weight = (this.weight_fn)(&item);
-                match this.bucket.consume_with_borrow(weight).unwrap() {
-                    Some(duration) => {
-                        // Store the item and set up delay
-                        *this.pending_item = Some(item);
-                        #[cfg(feature = "tokio-hrtime")]
-                        {
-                            this.delay.set(Some(sleep(Duration::from(duration))));
-                        }
-                        #[cfg(not(feature = "tokio-hrtime"))]
-                        {
-                            if let Some(delay) = this.delay.as_mut().as_pin_mut() {
-                                delay.reset(Instant::now() + Duration::from(duration));
-                            } else {
+            match next_item {
+                Some(item) => {
+                    let weight = (this.weight_fn)(&item);
+                    match bucket.consume_with_borrow(weight).unwrap() {
+                        Some(duration) => {
+                            // Store the item and set up delay
+                            *this.pending_item = Some(item);
+                            #[cfg(feature = "tokio-hrtime")]
+                            {
                                 this.delay.set(Some(sleep(Duration::from(duration))));
                             }
-                        }
-                        // Wake up to continue polling
-                        cx.waker().wake_by_ref();
+                            #[cfg(not(feature = "tokio-hrtime"))]
+                            {
+                                if let Some(delay) = this.delay.as_mut().as_pin_mut() {
+                                    delay.reset(Instant::now() + Duration::from(duration));
+                                } else {
+                                    this.delay.set(Some(sleep(Duration::from(duration))));
+                                }
+                            }
+                            // Wake up to continue polling
+                            cx.waker().wake_by_ref();
 
-                        coop.made_progress();
-                        Poll::Pending
-                    }
-                    None => {
-                        coop.made_progress();
-                        // No delay needed, return item immediately
-                        Poll::Ready(Some(item))
+                            coop.made_progress();
+                            Poll::Pending
+                        }
+                        None => {
+                            coop.made_progress();
+                            // No delay needed, return item immediately
+                            Poll::Ready(Some(item))
+                        }
                     }
                 }
+                None => Poll::Ready(None),
             }
-            None => Poll::Ready(None),
+        } else {
+            this.stream.poll_next(cx).map(|item| {
+                coop.made_progress();
+                item
+            })
         }
     }
 }
