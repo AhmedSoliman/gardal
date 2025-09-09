@@ -1,3 +1,4 @@
+use std::marker::PhantomPinned;
 use std::num::NonZeroU32;
 use std::pin::Pin;
 use std::task::{Context, Poll, ready};
@@ -15,10 +16,6 @@ use tokio::time::Instant;
 
 pin_project! {
     /// A stream wrapper that applies throttling using a token bucket.
-    ///
-    /// This stream consumes one token per item and will delay items when
-    /// tokens are not available. It uses borrowing from future capacity
-    /// to maintain smooth flow control.
     ///
     /// # Examples
     ///
@@ -41,10 +38,7 @@ pin_project! {
         C: Clock,
     {
         #[pin]
-        stream: S,
-        bucket: Option<TokenBucket<ST, C>>,
-        #[pin]
-        delay: Option<Sleep>,
+        weighted_stream: WeightedStream<S, ST, C, fn(&S::Item) -> NonZeroU32>,
     }
 }
 
@@ -61,27 +55,23 @@ where
     /// * `stream` - The underlying stream to throttle
     /// * `bucket` - The token bucket to use for throttling
     pub fn new(stream: S, bucket: impl Into<Option<TokenBucket<ST, C>>>) -> Self {
+        let unit_weight_fn: fn(&S::Item) -> NonZeroU32 =
+            |_| unsafe { NonZeroU32::new_unchecked(1) };
         Self {
-            stream,
-            bucket: bucket.into(),
-            delay: None,
+            weighted_stream: WeightedStream::new(stream, bucket, unit_weight_fn),
         }
     }
 
     /// Returns a reference to the current throttling configuration.
     pub fn limit(&self) -> Option<&Limit> {
-        self.bucket.as_ref().map(|b| b.limit())
+        self.weighted_stream.limit()
     }
 
     /// Returns the number of tokens currently available in the bucket.
     ///
     /// Returns zero if the bucket is in debt from borrowing.
     pub fn available(&self) -> f64 {
-        if let Some(bucket) = &self.bucket {
-            bucket.available()
-        } else {
-            f64::MAX
-        }
+        self.weighted_stream.available()
     }
 
     /// Adds tokens back to the bucket.
@@ -93,29 +83,27 @@ where
     ///
     /// * `tokens` - Number of tokens to add
     pub fn add_tokens(&self, tokens: impl Into<f64>) {
-        if let Some(bucket) = &self.bucket {
-            bucket.add_tokens(tokens)
-        }
+        self.weighted_stream.add_tokens(tokens)
     }
 
     /// Consumes the throttled stream, returning the underlying stream.
     pub fn into_inner(self) -> S {
-        self.stream
+        self.weighted_stream.into_inner()
     }
 
     /// Returns a reference to the underlying stream.
     pub fn inner(&self) -> &S {
-        &self.stream
+        self.weighted_stream.inner()
     }
 
     /// Returns a reference to the underlying stream.
     pub fn inner_mut(&mut self) -> &mut S {
-        &mut self.stream
+        self.weighted_stream.inner_mut()
     }
 
     /// Returns a reference to the underlying stream.
     pub fn inner_pin_mut(self: Pin<&mut Self>) -> Pin<&mut S> {
-        self.project().stream
+        self.project().weighted_stream.inner_pin_mut()
     }
 }
 
@@ -128,49 +116,7 @@ where
     type Item = S::Item;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let mut this = self.project();
-        // are we already waiting for a delay?
-        let coop = ready!(tokio::task::coop::poll_proceed(cx));
-
-        if let Some(bucket) = &this.bucket {
-            if let Some(delay) = this.delay.as_mut().as_pin_mut() {
-                ready!(delay.poll(cx));
-            }
-
-            // deliver immediately
-            let next_item = ready!(this.stream.poll_next(cx));
-
-            match bucket
-                .consume_with_borrow(unsafe { NonZeroU32::new_unchecked(1) })
-                .unwrap()
-            {
-                Some(duration) => {
-                    #[cfg(feature = "tokio-hrtime")]
-                    {
-                        this.delay.set(Some(sleep(Duration::from(duration))));
-                    }
-                    #[cfg(not(feature = "tokio-hrtime"))]
-                    {
-                        if let Some(delay) = this.delay.as_mut().as_pin_mut() {
-                            delay.reset(Instant::now() + Duration::from(duration));
-                        } else {
-                            this.delay.set(Some(sleep(Duration::from(duration))));
-                        }
-                    }
-                }
-                None => {
-                    this.delay.set(None);
-                }
-            }
-
-            coop.made_progress();
-            Poll::Ready(next_item)
-        } else {
-            this.stream.poll_next(cx).map(|item| {
-                coop.made_progress();
-                item
-            })
-        }
+        self.project().weighted_stream.poll_next(cx)
     }
 }
 
@@ -191,6 +137,8 @@ pin_project! {
         #[pin]
         delay: Option<Sleep>,
         pending_item: Option<S::Item>,
+        // Make sure we are always !Unpin even if using tokio-hrtime for API consistency
+        _marker: PhantomPinned,
     }
 }
 
@@ -232,6 +180,7 @@ where
             weight_fn,
             delay: None,
             pending_item: None,
+            _marker: PhantomPinned,
         }
     }
 
@@ -302,8 +251,8 @@ where
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut this = self.project();
-        let coop = ready!(tokio::task::coop::poll_proceed(cx));
 
+        let coop = ready!(tokio::task::coop::poll_proceed(cx));
         if let Some(bucket) = &this.bucket {
             // If we have a pending item and delay, wait for the delay to complete
             if this.pending_item.is_some() {
