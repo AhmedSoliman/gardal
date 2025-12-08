@@ -25,16 +25,16 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-gardal = "0.0.1-alpha.4"
+gardal = "0.0.1-alpha.8"
 
 # For async support
-gardal = { version = "0.0.1-alpha.4", features = ["async"] }
+gardal = { version = "0.0.1-alpha.8", features = ["async"] }
 
 # For high-performance timing
-gardal = { version = "0.0.1-alpha.4", features = ["quanta"] }
+gardal = { version = "0.0.1-alpha.8", features = ["quanta"] }
 
 # For high-resolution async timers
-gardal = { version = "0.0.1-alpha.4", features = ["async", "tokio-hrtime"] }
+gardal = { version = "0.0.1-alpha.8", features = ["async", "tokio-hrtime"] }
 ```
 
 ### Basic Usage
