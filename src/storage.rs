@@ -31,7 +31,7 @@ pub(crate) enum TokenAcquisition {
 /// Heavily inspired by folly's TokenBucket algorithm.
 #[derive(Debug, Clone)]
 pub(crate) struct TokenBucketStorage<S> {
-    inner: S,
+    pub(crate) inner: S,
 }
 
 impl<S: TimeStorage> TokenBucketStorage<S> {

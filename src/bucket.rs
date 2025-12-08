@@ -1,14 +1,11 @@
 use std::num::NonZeroU32;
 use std::time::Duration;
 
-use likely_stable::unlikely;
-
 use crate::clock::Nanos;
 use crate::error::{ExceededBurstCapacity, RateLimited};
-use crate::storage::atomic::AtomicStorage;
+use crate::storage::TimeStorage;
 use crate::storage::padded_atomic::PaddedAtomicStorage;
-use crate::storage::{TimeStorage, TokenAcquisition, TokenBucketStorage};
-use crate::{Clock, Limit, StdClock, Tokens};
+use crate::{Clock, Limit, RawTokenBucket, StdClock, Tokens};
 
 pub const UNLIMITED_BUCKET: Option<TokenBucket> = const { None };
 
@@ -42,32 +39,9 @@ pub const UNLIMITED_BUCKET: Option<TokenBucket> = const { None };
 /// ```
 #[derive(Clone)]
 pub struct TokenBucket<S = PaddedAtomicStorage, C = StdClock> {
-    bucket: TokenBucketStorage<S>,
+    bucket: RawTokenBucket<S, C>,
     clock: C,
     limit: Limit,
-}
-
-impl TokenBucket<AtomicStorage, StdClock> {
-    /// Creates a new token bucket with the specified rate limit using atomic storage and standard clock.
-    ///
-    /// This is the most common constructor for basic use cases requiring thread-safe access.
-    ///
-    /// # Arguments
-    ///
-    /// * `limit` - The rate and burst configuration for the bucket
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use gardal::{TokenBucket, Limit};
-    /// use std::num::NonZeroU32;
-    ///
-    /// let limit = Limit::per_second(NonZeroU32::new(100).unwrap());
-    /// let bucket = TokenBucket::new(limit);
-    /// ```
-    pub fn new(limit: Limit) -> Self {
-        TokenBucket::<AtomicStorage>::from_parts(limit, StdClock::default())
-    }
 }
 
 impl<C: Clock> TokenBucket<PaddedAtomicStorage, C> {
@@ -92,9 +66,8 @@ impl<C: Clock> TokenBucket<PaddedAtomicStorage, C> {
     /// let bucket = TokenBucket::with_clock(limit, clock);
     /// ```
     pub fn with_clock(limit: Limit, clock: C) -> Self {
-        let storage = PaddedAtomicStorage::new(clock.now());
         Self {
-            bucket: TokenBucketStorage::<PaddedAtomicStorage>::new(storage),
+            bucket: RawTokenBucket::<PaddedAtomicStorage, C>::new(&clock),
             clock,
             limit,
         }
@@ -102,6 +75,23 @@ impl<C: Clock> TokenBucket<PaddedAtomicStorage, C> {
 }
 
 impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
+    /// Creates a token bucket
+    ///
+    /// The time datum defaults to 0.0 which means that the bucket will be initially full
+    /// in case you are using one of the standard clocks provided by this crate.
+    ///
+    /// # Arguments
+    ///
+    /// * `limit` - The rate and burst configuration for the bucket
+    /// * `clock` - The clock implementation to use for timing.
+    pub fn new(limit: Limit, clock: C) -> Self {
+        Self {
+            bucket: RawTokenBucket::with_zero_time(0.0),
+            clock,
+            limit,
+        }
+    }
+
     /// Creates a token bucket from custom storage and clock implementations.
     ///
     /// This provides maximum flexibility for advanced use cases requiring specific
@@ -110,12 +100,12 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
     /// # Arguments
     ///
     /// * `limit` - The rate and burst configuration for the bucket
-    /// * `clock` - The clock implementation to use for timing
-    pub fn from_parts(limit: Limit, clock: C) -> Self {
-        // let storage = S::new(clock.now());
-        let storage = S::new(0.0);
+    /// * `clock` - The clock implementation to use for timing. It will use the clock's
+    ///   datum point as the zero time. This means that the bucket will be considered
+    ///   empty initially.
+    pub fn with_datum(limit: Limit, clock: C) -> Self {
         Self {
-            bucket: TokenBucketStorage::new(storage),
+            bucket: RawTokenBucket::new(&clock),
             clock,
             limit,
         }
@@ -130,12 +120,9 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
     /// * `limit` - The new rate and burst configuration
     pub fn reset(&mut self, limit: Limit) {
         let now = self.clock.now();
-        let available = self
-            .bucket
-            .balance(self.limit.rate, self.limit.burst, now)
-            .max(0.0);
+        let available = self.bucket.balance_at(now, &self.limit);
         self.limit = limit;
-        self.set_capacity(available, now);
+        self.bucket.set_capacity(available, now, limit.rate);
     }
 
     /// Consumes the bucket and returns a new one with updated rate limits.
@@ -151,22 +138,14 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
     /// A new token bucket with the updated configuration
     pub fn update_limit(self, limit: Limit) -> Self {
         let now = self.clock.now();
-        let available = self
-            .bucket
-            .balance(self.limit.rate, self.limit.burst, now)
-            .max(0.0);
+        let available = self.bucket.balance_at(now, &self.limit);
         let mut new = Self {
             bucket: self.bucket,
             clock: self.clock,
             limit,
         };
-        new.set_capacity(available, now);
+        new.bucket.set_capacity(available, now, new.limit.rate);
         new
-    }
-
-    /// Set the number of tokens currently available in the bucket.
-    fn set_capacity(&mut self, tokens: f64, now: f64) {
-        self.bucket.reset(now - tokens / self.limit.rate);
     }
 
     /// Attempts to consume exactly the specified number of tokens.
@@ -201,16 +180,7 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
     /// }
     /// ```
     pub fn consume(&self, to_consume: impl Into<NonZeroU32>) -> Option<Tokens> {
-        let now = self.clock.now();
-        let to_consume: NonZeroU32 = to_consume.into();
-        let to_consume: f64 = to_consume.get() as f64;
-
-        let consumed = self
-            .bucket
-            .consume(self.limit.rate, self.limit.burst, now, |avail| {
-                if avail < to_consume { 0.0 } else { to_consume }
-            });
-        Tokens::new_checked(consumed)
+        self.bucket.consume(to_consume, &self.clock, &self.limit)
     }
 
     /// Attempts to consume exactly one token.
@@ -222,7 +192,8 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
     /// * `Some(Tokens)` - Successfully consumed one token
     /// * `None` - No tokens available
     pub fn consume_one(&self) -> Option<Tokens> {
-        self.consume(NonZeroU32::new(1u32).unwrap())
+        self.bucket
+            .consume(NonZeroU32::new(1u32).unwrap(), &self.clock, &self.limit)
     }
 
     /// Attempts to consume one token with wait time information.
@@ -234,7 +205,8 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
     /// * `Ok(Tokens)` - Successfully consumed one token
     /// * `Err(RateLimited)` - Rate limited with suggested wait time
     pub fn try_consume_one(&self) -> Result<Tokens, RateLimited> {
-        self.try_consume(NonZeroU32::new(1u32).unwrap())
+        self.bucket
+            .try_consume(NonZeroU32::new(1u32).unwrap(), &self.clock, &self.limit)
     }
 
     /// Attempts to consume tokens with detailed rate limiting information.
@@ -269,24 +241,8 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
     /// }
     /// ```
     pub fn try_consume(&self, to_consume: impl Into<NonZeroU32>) -> Result<Tokens, RateLimited> {
-        let to_consume: NonZeroU32 = to_consume.into();
-        let to_consume: f64 = to_consume.get() as f64;
-        let now = self.clock.now();
-        let consumed = self
-            .bucket
-            .consume2(self.limit.rate, self.limit.burst, now, |avail| {
-                if avail < to_consume { 0.0 } else { to_consume }
-            });
-        match consumed {
-            TokenAcquisition::Acquired(consumed) => Ok(Tokens::new_unchecked(consumed)),
-            TokenAcquisition::ZeroedAt(zero_time) => {
-                let est_time = zero_time - now + to_consume / self.limit.rate;
-                debug_assert!(est_time >= 0.0);
-                Err(RateLimited {
-                    earliest_retry_time: Nanos::from_secs_f64_unchecked(est_time),
-                })
-            }
-        }
+        self.bucket
+            .try_consume(to_consume, &self.clock, &self.limit)
     }
 
     /// Consumes up to the requested number of tokens, returning whatever is available.
@@ -318,10 +274,8 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
     /// }
     /// ```
     pub fn saturating_consume(&self, to_consume: impl Into<NonZeroU32>) -> Option<Tokens> {
-        let now = self.clock.now();
-        let to_consume: NonZeroU32 = to_consume.into();
-        let to_consume: f64 = to_consume.get() as f64;
-        Tokens::new_checked(self.saturating_consume_inner(to_consume, now))
+        self.bucket
+            .saturating_consume(to_consume, &self.clock, &self.limit)
     }
 
     /// Returns unused tokens to the bucket or manually adds tokens.
@@ -346,9 +300,7 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
     /// bucket.add_tokens(5.0);
     /// ```
     pub fn add_tokens(&self, tokens: impl Into<f64>) {
-        let tokens = tokens.into();
-        debug_assert!(tokens > 0.0);
-        self.bucket.return_tokens(tokens, self.limit.rate);
+        self.bucket.add_tokens(tokens, &self.limit)
     }
 
     /// Consumes tokens by borrowing from future capacity.
@@ -390,24 +342,8 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
         &self,
         to_consume: impl Into<NonZeroU32>,
     ) -> Result<Option<Nanos>, ExceededBurstCapacity> {
-        let now = self.clock.now();
-        let to_consume: NonZeroU32 = to_consume.into();
-        let mut to_consume: f64 = to_consume.get() as f64;
-        if unlikely(self.limit.burst < to_consume) {
-            return Err(ExceededBurstCapacity);
-        }
-        while to_consume > 0.0 {
-            let consumed = self.saturating_consume_inner(to_consume, now);
-            if consumed > 0.0 {
-                to_consume -= consumed;
-            } else {
-                self.bucket.return_tokens(-to_consume, self.limit.rate);
-                let debt_paid = self.bucket.time_when_bucket(self.limit.rate, 0.0);
-                let nap_time = (debt_paid - now).max(0.0);
-                return Ok(Nanos::new_checked(nap_time));
-            }
-        }
-        Ok(None)
+        self.bucket
+            .consume_with_borrow(to_consume, &self.clock, &self.limit)
     }
 
     /// Consumes tokens with borrowing, limited to burst capacity.
@@ -428,26 +364,8 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
         &self,
         to_consume: impl Into<NonZeroU32>,
     ) -> (Option<Tokens>, Duration) {
-        let now = self.clock.now();
-        let to_consume: NonZeroU32 = to_consume.into();
-        let mut to_consume: f64 = to_consume.get() as f64;
-        to_consume = to_consume.min(self.limit.burst);
-        let actual_to_be_consumed = to_consume;
-        while to_consume > 0.0 {
-            let consumed = self.saturating_consume_inner(to_consume, now);
-            if consumed > 0.0 {
-                to_consume -= consumed;
-            } else {
-                self.bucket.return_tokens(-to_consume, self.limit.rate);
-                let debt_paid = self.bucket.time_when_bucket(self.limit.rate, 0.0);
-                let nap_time = (debt_paid - now).max(0.0);
-                return (
-                    Tokens::new_checked(actual_to_be_consumed),
-                    Duration::from_secs_f64(nap_time),
-                );
-            }
-        }
-        (None, Duration::ZERO)
+        self.bucket
+            .saturating_consume_with_borrow(to_consume, &self.clock, &self.limit)
     }
 
     /// Returns the number of tokens currently available for consumption.
@@ -459,7 +377,7 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
     ///
     /// Number of tokens available for immediate consumption
     pub fn available(&self) -> f64 {
-        self.balance().max(0.0)
+        self.bucket.available(&self.clock, &self.limit)
     }
 
     /// Returns the current token balance, which may be negative if in debt.
@@ -471,8 +389,7 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
     ///
     /// Current token balance (negative indicates debt)
     pub fn balance(&self) -> f64 {
-        self.bucket
-            .balance(self.limit.rate, self.limit.burst, self.clock.now())
+        self.bucket.balance(&self.clock, &self.limit)
     }
 
     /// Returns a reference to the current rate limit configuration.
@@ -482,13 +399,6 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
     /// Reference to the [`Limit`] configuration
     pub fn limit(&self) -> &Limit {
         &self.limit
-    }
-
-    fn saturating_consume_inner(&self, to_consume: f64, now: f64) -> f64 {
-        self.bucket
-            .consume(self.limit.rate, self.limit.burst, now, |avail| {
-                avail.max(0.0).min(to_consume)
-            })
     }
 }
 
