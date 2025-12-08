@@ -12,7 +12,7 @@
 //! ```rust
 //! use std::num::NonZeroU32;
 //!
-//! use gardal::{TokenBucket, Limit};
+//! use gardal::{AtomicTokenBucket, Limit, StdClock};
 //!
 //! // Create a rate limit: 10 tokens per second, burst of 20
 //! let limit = Limit::per_second_and_burst(
@@ -21,7 +21,7 @@
 //! );
 //!
 //! // Create token bucket
-//! let bucket = TokenBucket::new(limit);
+//! let bucket = AtomicTokenBucket::new(limit, StdClock);
 //!
 //! // Try to consume tokens
 //! if let Some(tokens) = bucket.consume(NonZeroU32::new(5).unwrap()) {
@@ -35,6 +35,7 @@ mod error;
 #[cfg(feature = "async")]
 pub mod futures;
 mod limit;
+mod raw_bucket;
 mod storage;
 mod tokens;
 
@@ -48,12 +49,17 @@ pub use error::*;
 #[cfg(feature = "async")]
 pub use futures::StreamExt;
 pub use limit::Limit;
+pub use raw_bucket::RawTokenBucket;
 pub use tokens::Tokens;
 
 pub use storage::{
     TimeStorage, atomic::AtomicSharedStorage, atomic::AtomicStorage, local::LocalStorage,
     padded_atomic::PaddedAtomicSharedStorage, padded_atomic::PaddedAtomicStorage,
 };
+
+pub type LocalTokenBucket<C> = TokenBucket<LocalStorage, C>;
+pub type AtomicTokenBucket<C> = TokenBucket<AtomicStorage, C>;
+pub type SharedTokenBucket<C> = TokenBucket<PaddedAtomicSharedStorage, C>;
 
 pub(crate) mod private {
     pub trait Sealed {}

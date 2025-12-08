@@ -8,11 +8,11 @@ use std::num::NonZero;
 /// # Examples
 ///
 /// ```rust
-/// use gardal::{TokenBucket, Limit};
+/// use gardal::{LocalTokenBucket, Limit, StdClock};
 /// use std::num::NonZeroU32;
 ///
 /// let limit = Limit::per_second(NonZeroU32::new(10).unwrap());
-/// let bucket = TokenBucket::new(limit);
+/// let bucket = LocalTokenBucket::new(limit, StdClock);
 ///
 /// if let Some(tokens) = bucket.consume_one() {
 ///     println!("Consumed {} tokens", tokens.as_u64());

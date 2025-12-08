@@ -60,7 +60,7 @@ impl Debug for AtomicF64 {
 /// use std::num::NonZeroU32;
 ///
 /// let limit = Limit::per_second(NonZeroU32::new(100).unwrap());
-/// let bucket = TokenBucket::<AtomicStorage, _>::from_parts(limit, StdClock::default());
+/// let bucket = TokenBucket::<AtomicStorage, _>::new(limit, StdClock);
 /// ```
 #[derive(Debug)]
 pub struct AtomicStorage(AtomicF64);
@@ -101,7 +101,7 @@ impl TimeStorage for AtomicStorage {
 ///
 /// let limit = Limit::per_second(NonZeroU32::new(100).unwrap());
 /// let clock = Arc::new(ManualClock::new(0.0));
-/// let bucket1 = TokenBucket::<AtomicSharedStorage, _>::from_parts(limit, Arc::clone(&clock));
+/// let bucket1 = TokenBucket::<AtomicSharedStorage, _>::new(limit, Arc::clone(&clock));
 /// let bucket2 = bucket1.clone(); // Shares the same token state
 /// ```
 #[derive(Debug, Clone)]

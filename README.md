@@ -25,29 +25,29 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-gardal = "0.0.1-alpha.4"
+gardal = "0.0.1-alpha.8"
 
 # For async support
-gardal = { version = "0.0.1-alpha.4", features = ["async"] }
+gardal = { version = "0.0.1-alpha.8", features = ["async"] }
 
 # For high-performance timing
-gardal = { version = "0.0.1-alpha.4", features = ["quanta"] }
+gardal = { version = "0.0.1-alpha.8", features = ["quanta"] }
 
 # For high-resolution async timers
-gardal = { version = "0.0.1-alpha.4", features = ["async", "tokio-hrtime"] }
+gardal = { version = "0.0.1-alpha.8", features = ["async", "tokio-hrtime"] }
 ```
 
 ### Basic Usage
 
 ```rust
-use gardal::{Limit, TokenBucket};
+use gardal::{Limit, LocalTokenBucket, StdClock};
 use nonzero_ext::nonzero;
 
 // Create a token bucket: 10 tokens per second, burst of 20
-let bucket = TokenBucket::new(Limit::per_second_and_burst(
+let bucket = LocalTokenBucket::new(Limit::per_second_and_burst(
     nonzero!(10u32),
     nonzero!(20u32),
-));
+), StdClock);
 
 // Consume 5 tokens
 match bucket.consume(nonzero!(5u32)) {
@@ -61,15 +61,15 @@ match bucket.consume(nonzero!(5u32)) {
 ```rust
 use futures::{StreamExt, stream};
 use gardal::futures::StreamExt as GardalStreamExt;
-use gardal::{Limit, TokenBucket, AtomicSharedStorage, QuantaClock};
+use gardal::{Limit, SharedTokenBucket, QuantaClock};
 use nonzero_ext::nonzero;
 
 #[tokio::main]
 async fn main() {
     let limit = Limit::per_second(nonzero!(5u32));
-    let bucket = TokenBucket::<AtomicSharedStorage, _>::from_parts(
+    let bucket = SharedTokenBucket::new(
         limit, 
-        QuantaClock::default()
+        QuantaClock,
     );
 
     let mut stream = stream::iter(1..=100)
@@ -115,13 +115,13 @@ Choose the appropriate storage strategy for your use case:
 - **`LocalStorage`**: Thread-local storage for single-threaded applications
 
 ```rust
-use gardal::{TokenBucket, AtomicSharedStorage, Limit};
+use gardal::{TokenBucket, StdClock, AtomicSharedStorage, Limit};
 use nonzero_ext::nonzero;
 
 // Explicitly specify storage type
-let bucket = TokenBucket::<AtomicSharedStorage>::from_parts(
+let bucket = TokenBucket::<AtomicSharedStorage, _>::new(
     Limit::per_second(nonzero!(10u32)),
-    gardal::StdClock::default()
+    StdClock
 );
 ```
 
@@ -141,13 +141,13 @@ For applications requiring precise timing in async contexts, enable the `tokio-h
 ```rust
 use futures::{StreamExt, stream};
 use gardal::futures::StreamExt as GardalStreamExt;
-use gardal::{Limit, TokenBucket};
+use gardal::{Limit, SharedTokenBucket, TokioClock};
 use nonzero_ext::nonzero;
 
 #[tokio::main]
 async fn main() {
     let limit = Limit::per_second(nonzero!(1000u32)); // High-frequency rate limiting
-    let bucket = TokenBucket::new(limit);
+    let bucket = SharedTokenBucket::new(limit, TokioClock);
 
     let mut stream = stream::iter(1..=10000)
         .throttle(bucket)

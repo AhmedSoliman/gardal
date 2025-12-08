@@ -9,17 +9,14 @@ use gardal::{
 use nonzero_ext::nonzero;
 
 fn bench_consume(c: &mut Criterion) {
-    let clock = quanta::Clock::new();
     let limit = Limit::per_second(nonzero!(10_000u32));
-    let _quanta_thread = quanta::Upkeep::new_with_clock(Duration::from_micros(10), clock.clone())
+    let _quanta_thread = quanta::Upkeep::new(Duration::from_micros(10))
         .start()
         .unwrap();
-    let clock = FastClock::new(clock);
-    let quanta_tb =
-        TokenBucket::<PaddedAtomicStorage, _>::from_parts(limit, QuantaClock::default());
-    let std_tb = TokenBucket::<PaddedAtomicStorage, _>::from_parts(limit, StdClock::default());
-    let fast_tb = TokenBucket::<LocalStorage, _>::from_parts(limit, clock.clone());
-    let fast_tb_padded = TokenBucket::<PaddedAtomicStorage, _>::from_parts(limit, clock.clone());
+    let quanta_tb = TokenBucket::<PaddedAtomicStorage, _>::with_datum(limit, QuantaClock);
+    let std_tb = TokenBucket::<PaddedAtomicStorage, _>::with_datum(limit, StdClock);
+    let fast_tb = TokenBucket::<LocalStorage, _>::with_datum(limit, FastClock);
+    let fast_tb_padded = TokenBucket::<PaddedAtomicStorage, _>::with_datum(limit, FastClock);
     std::thread::sleep(Duration::from_secs(1));
     let mut group = c.benchmark_group("tokenbucket");
     group
@@ -27,7 +24,7 @@ fn bench_consume(c: &mut Criterion) {
         .sample_size(100)
         .bench_function("consume-mock-clock-local-storage", |b| {
             let clock = ManualClock::default();
-            let tb = TokenBucket::<LocalStorage, _>::from_parts(limit, &clock);
+            let tb = TokenBucket::<LocalStorage, _>::with_datum(limit, &clock);
             clock.set(10.0);
             b.iter(|| {
                 let _x = std::hint::black_box(tb.try_consume_one());
@@ -35,7 +32,7 @@ fn bench_consume(c: &mut Criterion) {
         })
         .bench_function("consume-mock-clock-atomic-storage", |b| {
             let clock = ManualClock::default();
-            let tb = TokenBucket::<AtomicStorage, _>::from_parts(limit, &clock);
+            let tb = TokenBucket::<AtomicStorage, _>::with_datum(limit, &clock);
             clock.set(10.0);
             b.iter(|| {
                 tb.consume_one();
@@ -43,7 +40,7 @@ fn bench_consume(c: &mut Criterion) {
         })
         .bench_function("consume-mock-clock-padded-atomic-storage", |b| {
             let clock = ManualClock::default();
-            let tb = TokenBucket::<PaddedAtomicStorage, _>::from_parts(limit, &clock);
+            let tb = TokenBucket::<PaddedAtomicStorage, _>::with_datum(limit, &clock);
             clock.set(10.0);
             b.iter(|| {
                 tb.consume_one();
@@ -75,19 +72,16 @@ fn bench_consume(c: &mut Criterion) {
 const THREADS: u32 = 24;
 
 fn multi_threaded(c: &mut Criterion) {
-    let clock = quanta::Clock::new();
-    let _quanta_thread = quanta::Upkeep::new_with_clock(Duration::from_micros(100), clock.clone())
+    let _quanta_thread = quanta::Upkeep::new(Duration::from_micros(100))
         .start()
         .unwrap();
-    let clock = FastClock::new(clock);
     let limit = Limit::per_second(nonzero!(10_000u32));
     let mut group = c.benchmark_group("multi_threaded");
     group
         .throughput(Throughput::Elements(1))
         .bench_function("padded", |b| {
-            let tb = Arc::new(TokenBucket::<PaddedAtomicStorage, _>::from_parts(
-                limit,
-                clock.clone(),
+            let tb = Arc::new(TokenBucket::<PaddedAtomicStorage, _>::with_datum(
+                limit, FastClock,
             ));
             b.iter_custom(|iters| {
                 let mut children = vec![];
@@ -108,9 +102,8 @@ fn multi_threaded(c: &mut Criterion) {
             })
         })
         .bench_function("atomic", |b| {
-            let tb = Arc::new(TokenBucket::<AtomicStorage, _>::from_parts(
-                limit,
-                clock.clone(),
+            let tb = Arc::new(TokenBucket::<AtomicStorage, _>::with_datum(
+                limit, FastClock,
             ));
             b.iter_custom(|iters| {
                 let mut children = vec![];
@@ -133,20 +126,17 @@ fn multi_threaded(c: &mut Criterion) {
 }
 
 fn multi_threaded2(c: &mut Criterion) {
-    let clock = quanta::Clock::new();
-    let _quanta_thread = quanta::Upkeep::new_with_clock(Duration::from_micros(10), clock.clone())
+    let _quanta_thread = quanta::Upkeep::new(Duration::from_micros(10))
         .start()
         .unwrap();
-    let clock = FastClock::new(clock);
     let limit = Limit::per_second(nonzero!(50u32));
     let mut group = c.benchmark_group("multi_threaded2");
     group
         .throughput(Throughput::Elements(1))
         .bench_function("padded", |b| {
             b.iter_custom(|iters| {
-                let tb = Arc::new(TokenBucket::<PaddedAtomicStorage, _>::from_parts(
-                    limit,
-                    clock.clone(),
+                let tb = Arc::new(TokenBucket::<PaddedAtomicStorage, _>::with_datum(
+                    limit, FastClock,
                 ));
                 let mut children = vec![];
                 let start = std::time::Instant::now();
@@ -166,9 +156,8 @@ fn multi_threaded2(c: &mut Criterion) {
         })
         .bench_function("atomic", |b| {
             b.iter_custom(|iters| {
-                let tb = Arc::new(TokenBucket::<AtomicStorage, _>::from_parts(
-                    limit,
-                    clock.clone(),
+                let tb = Arc::new(TokenBucket::<AtomicStorage, _>::with_datum(
+                    limit, FastClock,
                 ));
                 let mut children = vec![];
                 let start = std::time::Instant::now();
