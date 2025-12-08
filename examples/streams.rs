@@ -4,16 +4,16 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use futures::stream;
+use gardal::SharedTokenBucket;
 use gardal::futures::StreamExt as GardalStreamExt;
-use gardal::{Limit, PaddedAtomicSharedStorage, TokenBucket, TokioClock};
+use gardal::{Limit, TokioClock};
 use nonzero_ext::nonzero;
 use tokio::task::JoinSet;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
     let limit = Limit::per_second_and_burst(nonzero!(1000000u32), nonzero!(100u32));
-    let bucket =
-        TokenBucket::<PaddedAtomicSharedStorage, _>::from_parts(limit, TokioClock::default());
+    let bucket = SharedTokenBucket::new(limit, TokioClock);
 
     let mut print_start = tokio::time::Instant::now();
     let program_start = print_start;

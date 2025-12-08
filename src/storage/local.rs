@@ -20,7 +20,7 @@ use super::TimeStorage;
 /// use std::num::NonZeroU32;
 ///
 /// let limit = Limit::per_second(NonZeroU32::new(100).unwrap());
-/// let bucket = TokenBucket::<LocalStorage, _>::from_parts(limit, StdClock::default());
+/// let bucket = TokenBucket::<LocalStorage, _>::new(limit, StdClock);
 /// ```
 #[derive(Debug)]
 pub struct LocalStorage(Cell<f64>);

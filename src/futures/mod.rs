@@ -13,14 +13,14 @@
 //! ```rust
 //! # #[cfg(feature = "async")]
 //! # {
-//! use gardal::{TokenBucket, Limit};
+//! use gardal::{AtomicTokenBucket, Limit, StdClock};
 //! use gardal::futures::StreamExt;
 //! use futures::stream;
 //! use std::num::NonZeroU32;
 //!
 //! # async fn example() {
 //! let limit = Limit::per_second(NonZeroU32::new(10).unwrap());
-//! let bucket = TokenBucket::new(limit);
+//! let bucket = AtomicTokenBucket::new(limit, StdClock);
 //!
 //! let stream = stream::iter(0..100)
 //!     .throttle(Some(bucket));
@@ -49,14 +49,14 @@ use crate::{Clock, TokenBucket};
 /// ```rust
 /// # #[cfg(feature = "async")]
 /// # {
-/// use gardal::{TokenBucket, Limit};
+/// use gardal::{AtomicTokenBucket, Limit, StdClock};
 /// use gardal::futures::StreamExt;
 /// use futures::stream;
 /// use std::num::NonZeroU32;
 ///
 /// # async fn example() {
 /// let limit = Limit::per_second(NonZeroU32::new(5).unwrap());
-/// let bucket = TokenBucket::new(limit);
+/// let bucket = AtomicTokenBucket::new(limit, StdClock);
 ///
 /// let throttled = stream::iter(1..=10)
 ///     .throttle(Some(bucket));
@@ -100,14 +100,14 @@ where
     /// ```rust
     /// # #[cfg(feature = "async")]
     /// # {
-    /// use gardal::{TokenBucket, Limit};
+    /// use gardal::{AtomicTokenBucket, Limit, StdClock};
     /// use gardal::futures::StreamExt;
     /// use futures::stream;
     /// use std::num::NonZeroU32;
     ///
     /// # async fn example() {
     /// let limit = Limit::per_second(NonZeroU32::new(10).unwrap());
-    /// let bucket = TokenBucket::new(limit);
+    /// let bucket = AtomicTokenBucket::new(limit, StdClock);
     ///
     /// let throttled = stream::iter(vec!["small", "large", "medium"])
     ///     .throttle_weighted(bucket, |item: &&str| {

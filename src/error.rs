@@ -10,11 +10,11 @@ use crate::clock::Nanos;
 /// # Examples
 ///
 /// ```rust
-/// use gardal::{TokenBucket, Limit};
+/// use gardal::{LocalTokenBucket, Limit, StdClock};
 /// use std::num::NonZeroU32;
 ///
 /// let limit = Limit::per_second(NonZeroU32::new(1).unwrap());
-/// let bucket = TokenBucket::new(limit);
+/// let bucket = LocalTokenBucket::new(limit, StdClock);
 ///
 /// match bucket.try_consume_one() {
 ///     Ok(tokens) => println!("Got tokens: {}", tokens.as_u64()),
@@ -36,14 +36,14 @@ pub struct RateLimited {
 /// # Examples
 ///
 /// ```rust
-/// use gardal::{TokenBucket, Limit};
+/// use gardal::{LocalTokenBucket, Limit, StdClock};
 /// use std::num::NonZeroU32;
 ///
 /// let limit = Limit::per_second_and_burst(
 ///     NonZeroU32::new(10).unwrap(),
 ///     NonZeroU32::new(20).unwrap()
 /// );
-/// let bucket = TokenBucket::new(limit);
+/// let bucket = LocalTokenBucket::new(limit, StdClock);
 ///
 /// // This will fail because 25 > burst capacity of 20
 /// match bucket.consume_with_borrow(NonZeroU32::new(25).unwrap()) {

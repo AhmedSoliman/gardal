@@ -115,7 +115,7 @@ impl Limit {
     pub const fn per_minute(rate: NonZeroU32) -> Self {
         Self {
             rate: rate.get() as f64 / SECONDS_PER_MINUTE,
-            burst: rate.get() as f64 / SECONDS_PER_MINUTE,
+            burst: (rate.get() as f64).max(1.0),
         }
     }
 
@@ -140,7 +140,7 @@ impl Limit {
     pub const fn per_hour(rate: NonZeroU32) -> Self {
         Self {
             rate: rate.get() as f64 / SECONDS_PER_HOUR,
-            burst: rate.get() as f64 / SECONDS_PER_HOUR,
+            burst: (rate.get() as f64).max(1.0),
         }
     }
 
