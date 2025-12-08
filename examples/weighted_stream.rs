@@ -38,7 +38,7 @@ async fn main() {
 
     // Create a throttling limit: 5 tokens per second with a burst of 25
     let limit = Limit::per_second_and_burst(nonzero!(5u32), nonzero!(25u32));
-    let bucket = TokenBucket::<LocalStorage, _>::from_parts(limit, TokioClock::default());
+    let bucket = TokenBucket::<LocalStorage, _>::with_datum(limit, TokioClock::default());
 
     // Create a weighted stream where each task consumes tokens based on its size
     let weighted_stream = WeightedStream::new(stream, bucket, |task: &Task| {
@@ -76,7 +76,7 @@ async fn main() {
 
     let stream2 = stream::iter(tasks2);
     let limit2 = Limit::per_second_and_burst(nonzero!(3u32), nonzero!(25u32));
-    let bucket2 = TokenBucket::<LocalStorage, _>::from_parts(limit2, TokioClock::default());
+    let bucket2 = TokenBucket::<LocalStorage, _>::with_datum(limit2, TokioClock::default());
 
     // Use the extension trait to create a weighted stream
     let weighted_stream2 = stream2.throttle_weighted(bucket2, |text: &&str| {
