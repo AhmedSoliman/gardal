@@ -111,6 +111,18 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
         }
     }
 
+    /// Creates a token bucket from custom storage and clock implementations.
+    ///
+    /// This uses the custom zero time instead of the clock's datum. Useful if
+    /// you'd like to reconstruct a bucket that restores the state after a restart.
+    pub fn with_zero_time(limit: Limit, clock: C, zero_time: f64) -> Self {
+        Self {
+            bucket: RawTokenBucket::with_zero_time(zero_time),
+            clock,
+            limit,
+        }
+    }
+
     /// Updates the rate limit configuration while preserving available tokens.
     ///
     /// The current token balance is maintained proportionally when changing limits.
