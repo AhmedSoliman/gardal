@@ -13,7 +13,7 @@ use tokio::task::JoinSet;
 async fn main() {
     let limit = Limit::per_second_and_burst(nonzero!(1000000u32), nonzero!(100u32));
     let bucket =
-        TokenBucket::<PaddedAtomicSharedStorage, _>::from_parts(limit, TokioClock::default());
+        TokenBucket::<PaddedAtomicSharedStorage, _>::with_datum(limit, TokioClock::default());
 
     let mut print_start = tokio::time::Instant::now();
     let program_start = print_start;

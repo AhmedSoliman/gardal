@@ -1,7 +1,28 @@
 use std::fmt::{Debug, Display};
 use std::num::NonZeroU64;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, SystemTime};
+
+struct Datum {
+    dur_since_epoch: f64,
+    std_instant: std::time::Instant,
+    #[cfg(feature = "tokio")]
+    tokio_instant: tokio::time::Instant,
+    #[cfg(feature = "quanta")]
+    quanta_instant: quanta::Instant,
+}
+
+static CLOCK_ORIGIN: LazyLock<Datum> = LazyLock::new(|| Datum {
+    dur_since_epoch: SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64(),
+    std_instant: std::time::Instant::now(),
+    #[cfg(feature = "tokio")]
+    tokio_instant: tokio::time::Instant::now(),
+    #[cfg(feature = "quanta")]
+    quanta_instant: quanta::Instant::now(),
+});
 
 /// Represents a non-zero time duration in nanoseconds.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -50,6 +71,12 @@ impl Display for Nanos {
 /// Implementations must provide monotonic time that never goes backwards.
 /// The time is measured in seconds as floating-point values.
 pub trait Clock {
+    /// The origin time point of the clock.
+    ///
+    /// The origin is the point where now() is guaranteed to be after.
+    fn datum(&self) -> f64 {
+        0.0
+    }
     /// Returns the current time in seconds since an arbitrary epoch.
     ///
     /// The returned value must be monotonic (never decrease) and should
@@ -77,24 +104,19 @@ pub trait Clock {
 /// let clock = StdClock::default();
 /// let bucket = TokenBucket::with_clock(limit, clock);
 /// ```
-#[derive(Clone)]
-pub struct StdClock {
-    origin: std::time::Instant,
-}
-
-impl Default for StdClock {
-    fn default() -> Self {
-        Self {
-            origin: std::time::Instant::now(),
-        }
-    }
-}
+#[derive(Clone, Default)]
+pub struct StdClock;
 
 impl Clock for StdClock {
+    fn datum(&self) -> f64 {
+        CLOCK_ORIGIN.dur_since_epoch
+    }
+
     fn now(&self) -> f64 {
         std::time::Instant::now()
-            .duration_since(self.origin)
+            .duration_since(CLOCK_ORIGIN.std_instant)
             .as_secs_f64()
+            + CLOCK_ORIGIN.dur_since_epoch
     }
 }
 
@@ -117,35 +139,16 @@ impl Clock for StdClock {
 /// # }
 /// ```
 #[cfg(feature = "quanta")]
-#[derive(Clone)]
-pub struct QuantaClock {
-    origin: quanta::Instant,
-}
-
-#[cfg(feature = "quanta")]
-impl Default for QuantaClock {
-    fn default() -> Self {
-        Self::new(quanta::Clock::new())
-    }
-}
-
-#[cfg(feature = "quanta")]
-impl QuantaClock {
-    /// Creates a new `QuantaClock` from a `quanta::Clock` instance.
-    ///
-    /// # Arguments
-    ///
-    /// * `clock` - The quanta clock instance to use
-    pub fn new(clock: quanta::Clock) -> Self {
-        let origin = clock.now();
-        Self { origin }
-    }
-}
+#[derive(Clone, Default)]
+pub struct QuantaClock;
 
 #[cfg(feature = "quanta")]
 impl Clock for QuantaClock {
     fn now(&self) -> f64 {
-        self.origin.elapsed().as_secs_f64()
+        quanta::Instant::now()
+            .duration_since(CLOCK_ORIGIN.quanta_instant)
+            .as_secs_f64()
+            + CLOCK_ORIGIN.dur_since_epoch
     }
 }
 
@@ -162,29 +165,24 @@ impl Clock for QuantaClock {
 /// use std::num::NonZeroU32;
 ///
 /// let limit = Limit::per_second(NonZeroU32::new(100).unwrap());
-/// let clock = TokioClock::default();
-/// let bucket = TokenBucket::with_clock(limit, clock);
+/// let bucket = TokenBucket::with_clock(limit, TokioClock);
 /// # }
 /// ```
 #[cfg(feature = "tokio")]
-#[derive(Clone)]
-pub struct TokioClock {
-    origin: tokio::time::Instant,
-}
-
-#[cfg(feature = "tokio")]
-impl Default for TokioClock {
-    fn default() -> Self {
-        Self {
-            origin: tokio::time::Instant::now(),
-        }
-    }
-}
+#[derive(Clone, Default)]
+pub struct TokioClock;
 
 #[cfg(feature = "tokio")]
 impl Clock for TokioClock {
+    fn datum(&self) -> f64 {
+        CLOCK_ORIGIN.dur_since_epoch
+    }
+
     fn now(&self) -> f64 {
-        self.origin.elapsed().as_secs_f64()
+        tokio::time::Instant::now()
+            .duration_since(CLOCK_ORIGIN.tokio_instant)
+            .as_secs_f64()
+            + CLOCK_ORIGIN.dur_since_epoch
     }
 }
 
@@ -209,43 +207,24 @@ impl Clock for TokioClock {
 ///
 /// let limit = Limit::per_second(NonZeroU32::new(1000).unwrap());
 /// let clock = FastClock::default();
-/// let bucket = TokenBucket::with_clock(limit, clock);
+/// let bucket = TokenBucket::with_clock(limit, FastClock);
 /// # }
 /// ```
 #[cfg(feature = "quanta")]
-#[derive(Clone)]
-pub struct FastClock {
-    clock: quanta::Clock,
-    origin: quanta::Instant,
-}
-
-#[cfg(feature = "quanta")]
-impl Default for FastClock {
-    fn default() -> Self {
-        Self::new(quanta::Clock::new())
-    }
-}
-
-#[cfg(feature = "quanta")]
-impl FastClock {
-    /// Creates a new `FastClock` from a `quanta::Clock` instance.
-    ///
-    /// **Important**: Ensure the clock's upkeep thread is running, otherwise
-    /// the token bucket will not observe clock changes and timing will be incorrect.
-    ///
-    /// # Arguments
-    ///
-    /// * `clock` - The quanta clock instance to use
-    pub fn new(clock: quanta::Clock) -> Self {
-        let origin = clock.recent();
-        Self { clock, origin }
-    }
-}
+#[derive(Clone, Default)]
+pub struct FastClock;
 
 #[cfg(feature = "quanta")]
 impl Clock for FastClock {
+    fn datum(&self) -> f64 {
+        CLOCK_ORIGIN.dur_since_epoch
+    }
+
     fn now(&self) -> f64 {
-        (self.clock.recent() - self.origin).as_secs_f64()
+        quanta::Instant::recent()
+            .duration_since(CLOCK_ORIGIN.quanta_instant)
+            .as_secs_f64()
+            + CLOCK_ORIGIN.dur_since_epoch
     }
 }
 
