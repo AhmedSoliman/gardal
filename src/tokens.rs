@@ -44,11 +44,7 @@ impl Tokens {
     /// * `Some(Tokens)` if value > 0
     /// * `None` if value <= 0
     pub fn new_checked(value: f64) -> Option<Self> {
-        if value == 0.0 {
-            None
-        } else {
-            Some(Self::new_unchecked(value))
-        }
+        (value > 0.0).then(|| Self::new_unchecked(value))
     }
 
     pub(crate) fn new_unchecked(value: f64) -> Self {

@@ -166,8 +166,9 @@ impl<S: TimeStorage, C: Clock> RawTokenBucket<S, C> {
 
     /// Consumes up to the requested number of tokens, returning whatever is available.
     ///
-    /// This method will consume as many tokens as possible up to the requested amount,
-    /// without waiting. Returns `None` if no tokens are available.
+    /// This method will consume as many whole tokens as possible up to the requested amount,
+    /// without waiting. A fractional remainder stays in the bucket. Returns `None` if less
+    /// than one token is available.
     ///
     /// # Arguments
     ///
@@ -179,7 +180,7 @@ impl<S: TimeStorage, C: Clock> RawTokenBucket<S, C> {
     /// # Returns
     ///
     /// * `Some(Tokens)` - Number of tokens actually consumed (may be less than requested)
-    /// * `None` - No tokens available
+    /// * `None` - Less than one token available
     pub fn saturating_consume(
         &self,
         to_consume: impl Into<NonZeroU32>,
@@ -189,7 +190,10 @@ impl<S: TimeStorage, C: Clock> RawTokenBucket<S, C> {
         let now = clock.now();
         let to_consume: NonZeroU32 = to_consume.into();
         let to_consume: f64 = to_consume.get() as f64;
-        Tokens::new_checked(self.saturating_consume_inner(to_consume, now, limit))
+        let consumed = self.bucket.consume(limit.rate, limit.burst, now, |avail| {
+            avail.max(0.0).min(to_consume).floor()
+        });
+        Tokens::new_checked(consumed)
     }
 
     /// Returns unused tokens to the bucket or manually adds tokens.

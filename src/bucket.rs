@@ -44,6 +44,15 @@ pub struct TokenBucket<S = PaddedAtomicStorage, C = StdClock> {
     limit: Limit,
 }
 
+impl<S: TimeStorage, C: Clock> std::fmt::Debug for TokenBucket<S, C> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenBucket")
+            .field("limit", &self.limit)
+            .field("balance", &self.balance())
+            .finish()
+    }
+}
+
 impl<C: Clock> TokenBucket<PaddedAtomicStorage, C> {
     /// Creates a new token bucket with a custom clock implementation.
     ///
@@ -259,8 +268,9 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
 
     /// Consumes up to the requested number of tokens, returning whatever is available.
     ///
-    /// This method will consume as many tokens as possible up to the requested amount,
-    /// without waiting. Returns `None` if no tokens are available.
+    /// This method will consume as many whole tokens as possible up to the requested amount,
+    /// without waiting. A fractional remainder stays in the bucket. Returns `None` if less
+    /// than one token is available.
     ///
     /// # Arguments
     ///
@@ -269,7 +279,7 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
     /// # Returns
     ///
     /// * `Some(Tokens)` - Number of tokens actually consumed (may be less than requested)
-    /// * `None` - No tokens available
+    /// * `None` - Less than one token available
     ///
     /// # Examples
     ///
@@ -456,6 +466,10 @@ mod tests {
         assert!(tb.consume(nonzero!(5u32)).is_some());
         assert_eq!(tb.balance(), tb.available());
         assert_eq!(15.0, tb.available());
+        assert_eq!(
+            format!("{tb:?}"),
+            "TokenBucket { limit: Limit(rate_per_second=10, burst=20), balance: 15.0 }"
+        );
     }
 
     #[test]
@@ -528,6 +542,13 @@ mod tests {
         assert!(drained.is_none());
         assert_eq!(0.0, tb.available());
         assert_eq!(tb.balance(), tb.available());
+        // only whole tokens are consumed, the fraction stays in the bucket
+        clock.set(1.3);
+        let drained = tb.saturating_consume(nonzero!(8u32));
+        assert_eq!(drained.unwrap().as_u64(), 1);
+        assert!((tb.available() - 0.5).abs() < 1e-9);
+        assert!(tb.saturating_consume(nonzero!(8u32)).is_none());
+        assert!((tb.available() - 0.5).abs() < 1e-9);
     }
 
     #[test]
