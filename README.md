@@ -2,7 +2,7 @@
 
 [![Crates.io](https://img.shields.io/crates/v/gardal.svg)](https://crates.io/crates/gardal)
 [![Documentation](https://docs.rs/gardal/badge.svg)](https://docs.rs/gardal)
-[![CI](https://github.com/AhmedSoliman/gardal/workflows/CI/badge.svg)](https://github.com/AhmedSoliman/gardal/actions)
+[![CI](https://github.com/AhmedSoliman/gardal/actions/workflows/ci.yml/badge.svg)](https://github.com/AhmedSoliman/gardal/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0%20OR%20MIT-blue.svg)](http://www.apache.org/licenses/LICENSE-2.0)
 
 A performance-focused token bucket rate limiting and throttling library for Rust with optional async support.
@@ -25,16 +25,16 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-gardal = "0.0.1-alpha.9"
+gardal = "0.1.0"
 
 # For async support
-gardal = { version = "0.0.1-alpha.9", features = ["async"] }
+gardal = { version = "0.1.0", features = ["async"] }
 
 # For high-performance timing
-gardal = { version = "0.0.1-alpha.9", features = ["quanta"] }
+gardal = { version = "0.1.0", features = ["quanta"] }
 
 # For high-resolution async timers
-gardal = { version = "0.0.1-alpha.9", features = ["async", "tokio-hrtime"] }
+gardal = { version = "0.1.0", features = ["async", "tokio-hrtime"] }
 ```
 
 ### Basic Usage
@@ -82,7 +82,11 @@ async fn main() {
 }
 ```
 
-If you want to have an unlimited stream in a type-compatible way, you can pass `None::<TokenBucket>` to `rate_limit` and that would avoid any overhead from the token bucket logic.
+If you want to have an unlimited stream in a type-compatible way, you can pass `None::<TokenBucket>` (or `gardal::UNLIMITED_BUCKET`) to `throttle` and that would avoid any overhead from the token bucket logic.
+
+Use `throttle_weighted` when items have different costs; the closure returns how many tokens each item consumes (see [`weighted_stream.rs`](examples/weighted_stream.rs)). An item that weighs more than the bucket's burst capacity is charged the full burst capacity.
+
+Throttled streams sleep using Tokio timers, so they must be polled from within a Tokio runtime.
 
 ## Rate Limit Configuration
 
@@ -109,10 +113,13 @@ let limit = Limit::per_hour(nonzero!(1000u32));
 
 Choose the appropriate storage strategy for your use case:
 
-- **`AtomicStorage`**: Basic atomic storage for single-threaded or low-contention scenarios
-- **`PaddedAtomicStorage`**: Cache-line padded atomic storage (default) for better performance
-- **`AtomicSharedStorage`**: Optimized for high-contention multi-threaded scenarios
-- **`LocalStorage`**: Thread-local storage for single-threaded applications
+- **`PaddedAtomicStorage`** (default): Thread-safe atomic storage, padded to its own cache line to avoid false sharing
+- **`AtomicStorage`**: Thread-safe atomic storage without padding (smaller footprint)
+- **`PaddedAtomicSharedStorage`**: Like `PaddedAtomicStorage`, but `Arc`-backed so clones of the bucket share the same token state
+- **`AtomicSharedStorage`**: Like `AtomicStorage`, but `Arc`-backed so clones of the bucket share the same token state
+- **`LocalStorage`**: Non-atomic (`Cell`-based) storage for single-threaded use; fastest, but not `Sync`
+
+Convenience aliases: `LocalTokenBucket` (`LocalStorage`), `AtomicTokenBucket` (`AtomicStorage`) and `SharedTokenBucket` (`PaddedAtomicSharedStorage`).
 
 ```rust
 use gardal::{TokenBucket, StdClock, AtomicSharedStorage, Limit};
@@ -129,10 +136,19 @@ let bucket = TokenBucket::<AtomicSharedStorage, _>::new(
 
 Gardal supports multiple clock implementations:
 
-- **`FastClock`**: High-performance quanta-based clock (requires `quanta` feature)
 - **`StdClock`**: Standard library clock (default)
-- **`TokioClock`**: Tokio-based clock for async applications (requires `async` feature)
+- **`QuantaClock`**: High-precision clock backed by `quanta::Instant::now()` (requires `quanta` feature)
+- **`FastClock`**: Coarse, very cheap clock backed by `quanta::Instant::recent()`; precision depends on a running `quanta::Upkeep` thread (requires `quanta` feature)
+- **`TokioClock`**: Tokio-based clock for async applications, respects `tokio::time::pause()` (requires `tokio` feature, also enabled by `async`)
 - **`ManualClock`**: Manual clock for testing
+
+`Clock` is also implemented for `&C`, `Box<C>` and `Arc<C>`, so one clock can be shared by many buckets. You can implement `Clock` for your own time source.
+
+### Time Precision
+
+The built-in clocks report time as `f64` seconds since the Unix epoch. This absolute origin lets you persist a bucket's state (`get_zero_time`) and restore it later (`with_zero_time`), even in another process.
+
+The trade-off is resolution: around today's Unix time an `f64` can only represent steps of about 238 ns. Buckets refill continuously, so at `r` tokens per second the smallest observable refill is about `r × 2.4e-7` tokens: negligible for most workloads, but it reaches whole tokens at around 4 million tokens per second. If you need finer resolution than that, implement `Clock` with a recent origin (for example, the process start), at the cost of zero times that are only meaningful within one process.
 
 ### High-Resolution Async Timers
 
@@ -195,6 +211,7 @@ See the [`examples/`](examples/) directory for more usage patterns:
 - [`basic.rs`](examples/basic.rs): Basic token bucket usage
 - [`fast_clock.rs`](examples/fast_clock.rs): Using high-performance clocks
 - [`streams.rs`](examples/streams.rs): Async stream rate limiting
+- [`weighted_stream.rs`](examples/weighted_stream.rs): Weighted stream throttling with per-item costs
 
 ## Minimum Supported Rust Version (MSRV)
 
@@ -202,7 +219,12 @@ Gardal requires Rust 1.87.0 or later.
 
 ## License
 
-Apache License, Version 2.0 ([LICENSE-APACHE](http://www.apache.org/licenses/LICENSE-2.0))
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE](https://github.com/AhmedSoliman/gardal/blob/main/LICENSE) or <http://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](https://github.com/AhmedSoliman/gardal/blob/main/LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
+
+at your option.
 
 ## Contributing
 

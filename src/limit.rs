@@ -23,7 +23,7 @@ const SECONDS_PER_HOUR: f64 = 3600.0;
 /// // 60 requests per minute (1 per second), burst equals rate
 /// let limit = Limit::per_minute(NonZeroU32::new(60).unwrap());
 /// ```
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct Limit {
     pub(crate) rate: f64,
     pub(crate) burst: f64,

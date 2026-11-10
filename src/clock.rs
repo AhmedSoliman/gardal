@@ -24,23 +24,19 @@ static CLOCK_ORIGIN: LazyLock<Datum> = LazyLock::new(|| Datum {
     quanta_instant: quanta::Instant::now(),
 });
 
-/// Represents a non-zero time duration in nanoseconds.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct Nanos(NonZeroU64);
+/// A strictly positive duration, stored as the bit pattern of an `f64` number of seconds.
+///
+/// Internal representation used on hot paths to avoid converting to [`Duration`] until
+/// the caller asks for it.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct Nanos(NonZeroU64);
 
 impl Nanos {
-    pub fn new_checked(secs: f64) -> Option<Self> {
-        if secs <= 0.0 {
-            None
-        } else {
-            Some(Self::from_secs_f64_unchecked(secs))
-        }
-    }
-
-    pub const fn as_secs_f64(&self) -> f64 {
+    pub(crate) const fn as_secs_f64(&self) -> f64 {
         f64::from_bits(self.0.get())
     }
 
+    /// The caller must guarantee that `secs > 0.0`.
     pub(crate) const fn from_secs_f64_unchecked(secs: f64) -> Self {
         Self(unsafe { NonZeroU64::new_unchecked(secs.to_bits()) })
     }
@@ -54,15 +50,13 @@ impl From<Nanos> for Duration {
 
 impl Debug for Nanos {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let dur = Duration::from_secs_f64(self.as_secs_f64());
-        Debug::fmt(&dur, f)
+        Debug::fmt(&Duration::from(*self), f)
     }
 }
 
 impl Display for Nanos {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let dur = Duration::from_secs_f64(self.as_secs_f64());
-        Debug::fmt(&dur, f)
+        Debug::fmt(&Duration::from(*self), f)
     }
 }
 
@@ -70,6 +64,27 @@ impl Display for Nanos {
 ///
 /// Implementations must provide monotonic time that never goes backwards.
 /// The time is measured in seconds as floating-point values.
+///
+/// `Clock` is implemented for `&C`, `Box<C>` and `Arc<C>` for any `C: Clock`, so a
+/// single clock can be shared between several buckets.
+///
+/// # Precision
+///
+/// The built-in clocks ([`StdClock`], `TokioClock`, `QuantaClock` and `FastClock`)
+/// report seconds since the Unix epoch (the wall-clock time at process start plus the
+/// monotonic time elapsed since then). Using a common, absolute origin means a bucket's
+/// zero time (see [`TokenBucket::get_zero_time`](crate::TokenBucket::get_zero_time)) can
+/// be persisted and restored with
+/// [`TokenBucket::with_zero_time`](crate::TokenBucket::with_zero_time), even in another
+/// process.
+///
+/// The trade-off is resolution: an `f64` around today's Unix time (~1.8e9 seconds) can
+/// only represent steps of about 238 ns. The bucket refills continuously, so at a rate
+/// of `r` tokens per second the smallest observable refill is about `r × 2.4e-7`
+/// tokens. That is negligible for most workloads but reaches whole tokens at around
+/// 4 million tokens per second. A custom clock with a recent origin (for instance, the
+/// process start) has much finer resolution, at the cost of zero times that are only
+/// meaningful within one process.
 pub trait Clock {
     /// The origin time point of the clock.
     ///
@@ -88,6 +103,42 @@ pub trait Clock {
     fn now(&self) -> f64;
 }
 
+impl<C: Clock + ?Sized> Clock for &C {
+    #[inline]
+    fn datum(&self) -> f64 {
+        (**self).datum()
+    }
+
+    #[inline]
+    fn now(&self) -> f64 {
+        (**self).now()
+    }
+}
+
+impl<C: Clock + ?Sized> Clock for Box<C> {
+    #[inline]
+    fn datum(&self) -> f64 {
+        (**self).datum()
+    }
+
+    #[inline]
+    fn now(&self) -> f64 {
+        (**self).now()
+    }
+}
+
+impl<C: Clock + ?Sized> Clock for Arc<C> {
+    #[inline]
+    fn datum(&self) -> f64 {
+        (**self).datum()
+    }
+
+    #[inline]
+    fn now(&self) -> f64 {
+        (**self).now()
+    }
+}
+
 /// Standard clock implementation using [`std::time::Instant`].
 ///
 /// This provides high precision timing but may be slower than alternatives.
@@ -104,7 +155,7 @@ pub trait Clock {
 /// let clock = StdClock::default();
 /// let bucket = TokenBucket::with_clock(limit, clock);
 /// ```
-#[derive(Clone, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct StdClock;
 
 impl Clock for StdClock {
@@ -139,11 +190,15 @@ impl Clock for StdClock {
 /// # }
 /// ```
 #[cfg(feature = "quanta")]
-#[derive(Clone, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct QuantaClock;
 
 #[cfg(feature = "quanta")]
 impl Clock for QuantaClock {
+    fn datum(&self) -> f64 {
+        CLOCK_ORIGIN.dur_since_epoch
+    }
+
     fn now(&self) -> f64 {
         quanta::Instant::now()
             .duration_since(CLOCK_ORIGIN.quanta_instant)
@@ -154,7 +209,9 @@ impl Clock for QuantaClock {
 
 /// Tokio-compatible clock implementation using [`tokio::time::Instant`].
 ///
-/// Designed for use in async contexts with Tokio. Requires the "tokio" feature.
+/// Designed for use in async contexts with Tokio. It follows Tokio's notion of time,
+/// so it respects `tokio::time::pause()` and `tokio::time::advance()` in tests.
+/// Requires the "tokio" feature.
 ///
 /// # Examples
 ///
@@ -169,7 +226,7 @@ impl Clock for QuantaClock {
 /// # }
 /// ```
 #[cfg(feature = "tokio")]
-#[derive(Clone, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct TokioClock;
 
 #[cfg(feature = "tokio")]
@@ -195,7 +252,9 @@ impl Clock for TokioClock {
 /// # Performance vs Precision Trade-off
 ///
 /// This clock sacrifices some precision for speed by using quanta's coarse timing.
-/// The precision depends on how frequently quanta's upkeep thread runs.
+/// The precision depends on how frequently quanta's upkeep thread runs. Start one
+/// with [`quanta::Upkeep`]; without it, every call falls back to a full
+/// `quanta::Instant::now()` read.
 ///
 /// # Examples
 ///
@@ -211,7 +270,7 @@ impl Clock for TokioClock {
 /// # }
 /// ```
 #[cfg(feature = "quanta")]
-#[derive(Clone, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct FastClock;
 
 #[cfg(feature = "quanta")]
@@ -255,8 +314,9 @@ impl Clock for FastClock {
 /// clock.advance(1.0);
 /// assert!(bucket.consume_one().is_some());
 /// ```
+#[derive(Debug)]
 pub struct ManualClock {
-    pub now: Mutex<f64>,
+    now: Mutex<f64>,
 }
 
 impl Default for ManualClock {
@@ -299,20 +359,6 @@ impl ManualClock {
 }
 
 impl Clock for ManualClock {
-    fn now(&self) -> f64 {
-        let guard = self.now.lock().unwrap();
-        *guard
-    }
-}
-
-impl Clock for &ManualClock {
-    fn now(&self) -> f64 {
-        let guard = self.now.lock().unwrap();
-        *guard
-    }
-}
-
-impl Clock for Arc<ManualClock> {
     fn now(&self) -> f64 {
         let guard = self.now.lock().unwrap();
         *guard

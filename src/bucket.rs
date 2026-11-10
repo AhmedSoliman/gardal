@@ -1,12 +1,14 @@
 use std::num::NonZeroU32;
 use std::time::Duration;
 
-use crate::clock::Nanos;
-use crate::error::{ExceededBurstCapacity, RateLimited};
+use crate::error::{ExceededBurstCapacity, RateLimited, TryConsumeError};
 use crate::storage::TimeStorage;
 use crate::storage::padded_atomic::PaddedAtomicStorage;
 use crate::{Clock, Limit, RawTokenBucket, StdClock, Tokens};
 
+/// A "no bucket" value, for APIs that take an `Option<TokenBucket>` such as
+/// `gardal::futures::StreamExt::throttle` (requires the `async` feature): passing it
+/// disables throttling without any token bucket overhead.
 pub const UNLIMITED_BUCKET: Option<TokenBucket> = const { None };
 
 /// A token bucket rate limiter with configurable storage and clock implementations.
@@ -200,6 +202,7 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
     ///     println!("Not enough tokens available");
     /// }
     /// ```
+    #[must_use]
     pub fn consume(&self, to_consume: impl Into<NonZeroU32>) -> Option<Tokens> {
         self.bucket.consume(to_consume, &self.clock, &self.limit)
     }
@@ -212,9 +215,10 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
     ///
     /// * `Some(Tokens)` - Successfully consumed one token
     /// * `None` - No tokens available
+    #[must_use]
     pub fn consume_one(&self) -> Option<Tokens> {
         self.bucket
-            .consume(NonZeroU32::new(1u32).unwrap(), &self.clock, &self.limit)
+            .consume(NonZeroU32::MIN, &self.clock, &self.limit)
     }
 
     /// Attempts to consume one token with wait time information.
@@ -226,8 +230,7 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
     /// * `Ok(Tokens)` - Successfully consumed one token
     /// * `Err(RateLimited)` - Rate limited with suggested wait time
     pub fn try_consume_one(&self) -> Result<Tokens, RateLimited> {
-        self.bucket
-            .try_consume(NonZeroU32::new(1u32).unwrap(), &self.clock, &self.limit)
+        self.bucket.try_consume_one(&self.clock, &self.limit)
     }
 
     /// Attempts to consume tokens with detailed rate limiting information.
@@ -242,12 +245,17 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
     /// # Returns
     ///
     /// * `Ok(Tokens)` - Successfully consumed tokens
-    /// * `Err(RateLimited)` - Rate limited with suggested retry time
+    /// * `Err(TryConsumeError::RateLimited(_))` - Rate limited with suggested retry time
+    /// * `Err(TryConsumeError::ExceededBurstCapacity(_))` - More tokens were requested than
+    ///   the burst capacity, so the request can never succeed
+    ///
+    /// To consume a single token, [`try_consume_one`](Self::try_consume_one) returns
+    /// [`RateLimited`] directly since one token always fits the burst capacity.
     ///
     /// # Examples
     ///
     /// ```rust
-    /// use gardal::{LocalTokenBucket, Limit, StdClock};
+    /// use gardal::{LocalTokenBucket, Limit, StdClock, TryConsumeError};
     /// use std::num::NonZeroU32;
     ///
     /// let limit = Limit::per_second(NonZeroU32::new(10).unwrap());
@@ -255,13 +263,19 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
     ///
     /// match bucket.try_consume(NonZeroU32::new(5).unwrap()) {
     ///     Ok(tokens) => println!("Consumed {} tokens", tokens.as_u64()),
-    ///     Err(rate_limited) => {
+    ///     Err(TryConsumeError::RateLimited(rate_limited)) => {
     ///         let wait_time = rate_limited.earliest_retry_after();
     ///         println!("Rate limited, retry in {:?}", wait_time);
     ///     }
+    ///     Err(TryConsumeError::ExceededBurstCapacity(_)) => {
+    ///         println!("5 tokens will never fit in this bucket");
+    ///     }
     /// }
     /// ```
-    pub fn try_consume(&self, to_consume: impl Into<NonZeroU32>) -> Result<Tokens, RateLimited> {
+    pub fn try_consume(
+        &self,
+        to_consume: impl Into<NonZeroU32>,
+    ) -> Result<Tokens, TryConsumeError> {
         self.bucket
             .try_consume(to_consume, &self.clock, &self.limit)
     }
@@ -295,6 +309,7 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
     ///     println!("Got {} tokens (may be less than 100)", tokens.as_u64());
     /// }
     /// ```
+    #[must_use]
     pub fn saturating_consume(&self, to_consume: impl Into<NonZeroU32>) -> Option<Tokens> {
         self.bucket
             .saturating_consume(to_consume, &self.clock, &self.limit)
@@ -363,7 +378,7 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
     pub fn consume_with_borrow(
         &self,
         to_consume: impl Into<NonZeroU32>,
-    ) -> Result<Option<Nanos>, ExceededBurstCapacity> {
+    ) -> Result<Option<Duration>, ExceededBurstCapacity> {
         self.bucket
             .consume_with_borrow(to_consume, &self.clock, &self.limit)
     }
@@ -382,12 +397,21 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
     /// A tuple of:
     /// * `Option<Tokens>` - Number of tokens consumed (None if no borrowing occurred)
     /// * `Duration` - Wait time until the debt is paid (zero if no borrowing)
+    #[must_use]
     pub fn saturating_consume_with_borrow(
         &self,
         to_consume: impl Into<NonZeroU32>,
     ) -> (Option<Tokens>, Duration) {
         self.bucket
             .saturating_consume_with_borrow(to_consume, &self.clock, &self.limit)
+    }
+
+    /// See [`RawTokenBucket::saturating_borrow_nap`].
+    #[cfg(feature = "async")]
+    #[inline]
+    pub(crate) fn saturating_borrow_nap(&self, to_consume: NonZeroU32) -> f64 {
+        self.bucket
+            .saturating_borrow_nap(to_consume, &self.clock, &self.limit)
     }
 
     /// Returns the number of tokens currently available for consumption.
@@ -560,12 +584,36 @@ mod tests {
         // we didn't consume anything as a result.
         match tb.try_consume(nonzero!(5u32)) {
             Ok(_) => panic!("should not be able to consume"),
-            Err(RateLimited {
+            Err(TryConsumeError::RateLimited(RateLimited {
                 earliest_retry_time: est_wait_time,
-            }) => {
+            })) => {
                 assert_eq!(10.0, est_wait_time.as_secs_f64());
             }
+            Err(e) => panic!("unexpected error: {e:?}"),
         }
+    }
+
+    #[test]
+    fn try_consume_more_than_burst() {
+        let clock = Arc::new(ManualClock::default());
+        let limit = Limit::per_second_and_burst(nonzero!(10u32), nonzero!(20u32));
+        let tb = TokenBucket::<PaddedAtomicStorage, _>::with_clock(limit, Arc::clone(&clock));
+        // the bucket is full, but 25 tokens can never fit in a bucket of 20
+        clock.set(100.0);
+        assert_eq!(20.0, tb.available());
+        let err = tb.try_consume(nonzero!(25u32)).unwrap_err();
+        assert_eq!(
+            err,
+            TryConsumeError::ExceededBurstCapacity(ExceededBurstCapacity)
+        );
+        assert_eq!(None, err.earliest_retry_after());
+        // nothing was consumed
+        assert_eq!(20.0, tb.available());
+        // exactly the burst capacity is fine
+        assert_eq!(20, tb.try_consume(nonzero!(20u32)).unwrap().as_u64());
+        // and an empty bucket reports the wait time, not the burst error
+        let err = tb.try_consume(nonzero!(20u32)).unwrap_err();
+        assert_eq!(Some(Duration::from_secs(2)), err.earliest_retry_after());
     }
 
     #[test]

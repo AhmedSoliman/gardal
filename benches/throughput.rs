@@ -35,7 +35,7 @@ fn bench_consume(c: &mut Criterion) {
             let tb = TokenBucket::<AtomicStorage, _>::with_datum(limit, &clock);
             clock.set(10.0);
             b.iter(|| {
-                tb.consume_one();
+                let _ = tb.consume_one();
             });
         })
         .bench_function("consume-mock-clock-padded-atomic-storage", |b| {
@@ -43,27 +43,27 @@ fn bench_consume(c: &mut Criterion) {
             let tb = TokenBucket::<PaddedAtomicStorage, _>::with_datum(limit, &clock);
             clock.set(10.0);
             b.iter(|| {
-                tb.consume_one();
+                let _ = tb.consume_one();
             });
         })
         .bench_function("consume-std-clock-padded-atomic-storage", |b| {
             b.iter(|| {
-                std_tb.consume_one();
+                let _ = std_tb.consume_one();
             });
         })
         .bench_function("consume-fast-clock-local-storage", |b| {
             b.iter(|| {
-                fast_tb.consume_one();
+                let _ = fast_tb.consume_one();
             });
         })
         .bench_function("consume-fast-clock-padded-atomic-storage", |b| {
             b.iter(|| {
-                fast_tb_padded.consume_one();
+                let _ = fast_tb_padded.consume_one();
             })
         })
         .bench_function("consume-quanta-clock-padded-atomic-storage", |b| {
             b.iter(|| {
-                quanta_tb.consume_one();
+                let _ = quanta_tb.consume_one();
             });
         });
     group.finish();

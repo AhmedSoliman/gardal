@@ -18,7 +18,19 @@ use std::num::NonZero;
 ///     println!("Consumed {} tokens", tokens.as_u64());
 /// }
 /// ```
+// The token count is stored as the bit pattern of a strictly positive `f64`. For positive
+// floats the bit patterns order the same way as the values, so the derived comparisons are
+// numeric comparisons.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Tokens(pub(crate) NonZero<u64>);
+
+impl std::fmt::Debug for Tokens {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Tokens")
+            .field(&f64::from_bits(self.0.get()))
+            .finish()
+    }
+}
 
 impl Tokens {
     /// Creates a new `Tokens` instance from a non-zero value.
@@ -48,7 +60,8 @@ impl Tokens {
     }
 
     pub(crate) fn new_unchecked(value: f64) -> Self {
-        debug_assert!(value >= 0.0);
+        // 0.0 has an all-zero bit pattern, which would violate `NonZero`'s invariant.
+        debug_assert!(value > 0.0);
         Self(unsafe { NonZero::new_unchecked(value.to_bits()) })
     }
 

@@ -3,7 +3,7 @@ mod cache_padded;
 pub mod local;
 pub mod padded_atomic;
 
-/// Storage abstraction used by [`TokenBucket`].
+/// Storage abstraction used by [`TokenBucket`](crate::TokenBucket).
 ///
 /// Implementations can provide either atomic or non-atomic access to the
 /// underlying timestamp depending on the desired level of concurrency.

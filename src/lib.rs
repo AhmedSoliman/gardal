@@ -1,4 +1,5 @@
 #![doc = include_str!("../README.md")]
+#![warn(missing_docs)]
 //!
 //! # Core Components
 //!
@@ -57,8 +58,12 @@ pub use storage::{
     padded_atomic::PaddedAtomicSharedStorage, padded_atomic::PaddedAtomicStorage,
 };
 
+/// A single-threaded token bucket backed by [`LocalStorage`] (not `Sync`).
 pub type LocalTokenBucket<C> = TokenBucket<LocalStorage, C>;
+/// A thread-safe token bucket backed by [`AtomicStorage`].
 pub type AtomicTokenBucket<C> = TokenBucket<AtomicStorage, C>;
+/// A thread-safe token bucket backed by [`PaddedAtomicSharedStorage`]; clones share
+/// the same token state.
 pub type SharedTokenBucket<C> = TokenBucket<PaddedAtomicSharedStorage, C>;
 
 pub(crate) mod private {

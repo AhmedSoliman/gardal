@@ -55,8 +55,7 @@ where
     /// * `stream` - The underlying stream to throttle
     /// * `bucket` - The token bucket to use for throttling
     pub fn new(stream: S, bucket: impl Into<Option<TokenBucket<ST, C>>>) -> Self {
-        let unit_weight_fn: fn(&S::Item) -> NonZeroU32 =
-            |_| unsafe { NonZeroU32::new_unchecked(1) };
+        let unit_weight_fn: fn(&S::Item) -> NonZeroU32 = |_| NonZeroU32::MIN;
         Self {
             weighted_stream: WeightedStream::new(stream, bucket, unit_weight_fn),
         }
@@ -123,6 +122,12 @@ where
 pin_project! {
     /// A stream that is throttled by a token bucket with weighted consumption.
     /// Each item can consume a different number of tokens based on a weight function.
+    ///
+    /// Items are charged when they are pulled from the inner stream, borrowing from future
+    /// capacity if needed; the item is then held back until the debt is paid. An item whose
+    /// weight exceeds the bucket's burst capacity is charged the burst capacity.
+    ///
+    /// Delays use Tokio timers, so the stream must be polled inside a Tokio runtime.
     pub struct WeightedStream<S, ST, C, F>
     where
         S: Stream,
@@ -270,33 +275,34 @@ where
             match next_item {
                 Some(item) => {
                     let weight = (this.weight_fn)(&item);
-                    match bucket.consume_with_borrow(weight).unwrap() {
-                        Some(duration) => {
-                            // Store the item and set up delay
-                            *this.pending_item = Some(item);
-                            #[cfg(feature = "tokio-hrtime")]
-                            {
-                                this.delay.set(Some(sleep(Duration::from(duration))));
+                    // An item heavier than the burst capacity can never fit in the bucket, so
+                    // it is charged the full burst capacity instead of failing.
+                    let nap_time = bucket.saturating_borrow_nap(weight);
+                    if nap_time <= 0.0 {
+                        coop.made_progress();
+                        // No delay needed, return item immediately
+                        Poll::Ready(Some(item))
+                    } else {
+                        // Store the item and set up delay
+                        *this.pending_item = Some(item);
+                        let duration = Duration::from_secs_f64(nap_time);
+                        #[cfg(feature = "tokio-hrtime")]
+                        {
+                            this.delay.set(Some(sleep(duration)));
+                        }
+                        #[cfg(not(feature = "tokio-hrtime"))]
+                        {
+                            if let Some(delay) = this.delay.as_mut().as_pin_mut() {
+                                delay.reset(Instant::now() + duration);
+                            } else {
+                                this.delay.set(Some(sleep(duration)));
                             }
-                            #[cfg(not(feature = "tokio-hrtime"))]
-                            {
-                                if let Some(delay) = this.delay.as_mut().as_pin_mut() {
-                                    delay.reset(Instant::now() + Duration::from(duration));
-                                } else {
-                                    this.delay.set(Some(sleep(Duration::from(duration))));
-                                }
-                            }
-                            // Wake up to continue polling
-                            cx.waker().wake_by_ref();
+                        }
+                        // Wake up to continue polling
+                        cx.waker().wake_by_ref();
 
-                            coop.made_progress();
-                            Poll::Pending
-                        }
-                        None => {
-                            coop.made_progress();
-                            // No delay needed, return item immediately
-                            Poll::Ready(Some(item))
-                        }
+                        coop.made_progress();
+                        Poll::Pending
                     }
                 }
                 None => Poll::Ready(None),
@@ -468,6 +474,32 @@ mod tests {
         // Total tokens: 1 + 2 + 3 + 4 + 5 = 15 tokens
         // With burst of 5, first 5 tokens are immediate, then need 10 more at 1/sec
         assert!(elapsed >= Duration::from_secs(10));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_weighted_stream_item_heavier_than_burst() {
+        // burst of 5, but the second item weighs 10: it must be charged the burst capacity
+        // (5 tokens) instead of panicking with `ExceededBurstCapacity`.
+        let stream = stream::iter(vec![5u32, 10, 1]);
+        let limit = Limit::per_second_and_burst(nonzero!(5u32), nonzero!(5u32));
+        let bucket = TokenBucket::<LocalStorage, _>::new(limit, TokioClock::default());
+
+        let mut weighted_stream = std::pin::pin!(WeightedStream::new(stream, bucket, |&item| {
+            NonZeroU32::new(item).unwrap()
+        }));
+
+        let mut results = vec![];
+        let start = tokio::time::Instant::now();
+        while let Some(item) = weighted_stream.next().await {
+            results.push(item);
+        }
+        let elapsed = start.elapsed();
+
+        assert_eq!(results, vec![5, 10, 1]);
+        // starts full (5 tokens): item 5 is free, item 10 is charged 5 (1s of debt), and
+        // item 1 adds another 0.2s.
+        assert!(elapsed >= Duration::from_millis(1200), "{elapsed:?}");
+        assert!(elapsed < Duration::from_millis(1300), "{elapsed:?}");
     }
 
     #[tokio::test(start_paused = true)]

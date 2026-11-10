@@ -2,35 +2,99 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  fmt:
+    name: Rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Install Rust toolchain
-        uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          profile: minimal
-          toolchain: stable
-          override: true
-          components: rustfmt, clippy
-      - name: Cache cargo registry
-        uses: actions/cache@v3
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-      - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-      - name: Build
-        run: cargo build --verbose --all-targets
-      - name: Test
-        run: cargo test --all --verbose
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test (default features)
+        run: cargo test --locked
+      - name: Test (all features)
+        run: cargo test --locked --all-features
+
+  features:
+    name: Feature powerset
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-hack
+      - uses: Swatinem/rust-cache@v2
+      # --no-dev-deps: the self dev-dependency enables features and would mask
+      # combinations that don't compile for downstream users.
+      - run: cargo hack check --lib --feature-powerset --no-dev-deps
+        env:
+          RUSTFLAGS: -D warnings
+
+  msrv:
+    name: MSRV (1.87.0)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.87.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --locked --lib --all-features
+
+  semver:
+    name: Semver checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Compares the public API against the latest release on crates.io and fails if
+      # it changed in a way the version bump in Cargo.toml doesn't allow.
+      - uses: obi1kenobi/cargo-semver-checks-action@v2
+
+  docs:
+    name: Docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --locked --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
