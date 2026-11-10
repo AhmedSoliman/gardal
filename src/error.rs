@@ -3,65 +3,60 @@ use std::time::Duration;
 
 use crate::clock::Nanos;
 
-/// Error returned when a token consumption request is rate limited.
+/// The bucket doesn't have enough tokens right now.
 ///
-/// Contains information about when the operation can be retried.
+/// [`earliest_retry_after`](Self::earliest_retry_after) tells you how long until it will. It is
+/// an estimate: if something else takes tokens from the same bucket in the meantime, your
+/// retry can be rate limited again, so retry in a loop.
 ///
-/// # Examples
-///
-/// ```rust
-/// use gardal::{LocalTokenBucket, Limit, StdClock};
+/// ```rust,no_run
+/// use gardal::{Limit, LocalTokenBucket, StdClock};
 /// use std::num::NonZeroU32;
 ///
-/// let limit = Limit::per_second(NonZeroU32::new(1).unwrap());
-/// let bucket = LocalTokenBucket::new(limit, StdClock);
+/// let bucket = LocalTokenBucket::new(Limit::per_second(NonZeroU32::new(1).unwrap()), StdClock);
 ///
-/// match bucket.try_consume_one() {
-///     Ok(tokens) => println!("Got tokens: {}", tokens.as_u64()),
-///     Err(rate_limited) => {
-///         let wait_time = rate_limited.earliest_retry_after();
-///         println!("Rate limited, retry in {:?}", wait_time);
+/// for job in 0..3 {
+///     // Wait until there's a token for this job.
+///     while let Err(limited) = bucket.try_consume_one() {
+///         std::thread::sleep(limited.earliest_retry_after());
 ///     }
+///     println!("running job {job}");
 /// }
 /// ```
+///
+/// In async code, sleep with your runtime's timer instead, or let
+/// `gardal::futures` do the waiting for streams.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RateLimited {
     pub(crate) earliest_retry_time: Nanos,
 }
 
-/// Error returned when trying to borrow more tokens than the burst capacity allows.
+/// The request asks for more tokens than the bucket can ever hold.
 ///
-/// This occurs when using [`consume_with_borrow`](crate::TokenBucket::consume_with_borrow)
-/// or [`try_consume`](crate::TokenBucket::try_consume) (wrapped in [`TryConsumeError`])
-/// and requesting more tokens than the bucket's maximum capacity.
+/// A bucket never holds more than its burst, so retrying won't help. Split the work into smaller
+/// requests, raise the burst with [`Limit::with_burst`](crate::Limit::with_burst), or use the
+/// `saturating_*` methods, which cap the request at the burst.
 ///
-/// # Examples
+/// Returned by [`consume_with_borrow`](crate::TokenBucket::consume_with_borrow), and by
+/// [`try_consume`](crate::TokenBucket::try_consume) inside a [`TryConsumeError`].
 ///
 /// ```rust
-/// use gardal::{LocalTokenBucket, Limit, StdClock};
+/// use gardal::{ExceededBurstCapacity, Limit, LocalTokenBucket, StdClock};
 /// use std::num::NonZeroU32;
 ///
-/// let limit = Limit::per_second_and_burst(
-///     NonZeroU32::new(10).unwrap(),
-///     NonZeroU32::new(20).unwrap()
-/// );
+/// let limit = Limit::per_second_and_burst(NonZeroU32::new(10).unwrap(), NonZeroU32::new(20).unwrap());
 /// let bucket = LocalTokenBucket::new(limit, StdClock);
 ///
-/// // This will fail because 25 > burst capacity of 20
-/// match bucket.consume_with_borrow(NonZeroU32::new(25).unwrap()) {
-///     Ok(_) => println!("Borrowed successfully"),
-///     Err(_) => println!("Cannot borrow more than burst capacity"),
-/// }
+/// assert_eq!(
+///     bucket.consume_with_borrow(NonZeroU32::new(25).unwrap()),
+///     Err(ExceededBurstCapacity)
+/// );
 /// ```
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct ExceededBurstCapacity;
 
 impl RateLimited {
-    /// Returns the suggested duration to wait before retrying the operation.
-    ///
-    /// # Returns
-    ///
-    /// A [`Duration`] indicating the minimum time to wait before retrying
+    /// How long until the bucket has the requested tokens, if nobody else takes them first.
     pub fn earliest_retry_after(&self) -> Duration {
         Duration::from(self.earliest_retry_time)
     }
@@ -105,21 +100,20 @@ impl Display for ExceededBurstCapacity {
 impl std::error::Error for RateLimited {}
 impl std::error::Error for ExceededBurstCapacity {}
 
-/// Error returned by [`try_consume`](crate::TokenBucket::try_consume).
+/// Why [`try_consume`](crate::TokenBucket::try_consume) couldn't take the tokens.
 ///
-/// # Examples
+/// Either the bucket doesn't have them yet ([`RateLimited`](Self::RateLimited): wait and retry),
+/// or it never will ([`ExceededBurstCapacity`](Self::ExceededBurstCapacity): retrying won't
+/// help). [`earliest_retry_after`](Self::earliest_retry_after) covers both cases at once.
 ///
 /// ```rust
-/// use gardal::{LocalTokenBucket, Limit, StdClock, TryConsumeError};
+/// use gardal::{Limit, LocalTokenBucket, StdClock, TryConsumeError};
 /// use std::num::NonZeroU32;
 ///
-/// let limit = Limit::per_second_and_burst(
-///     NonZeroU32::new(10).unwrap(),
-///     NonZeroU32::new(20).unwrap()
-/// );
+/// let limit = Limit::per_second_and_burst(NonZeroU32::new(10).unwrap(), NonZeroU32::new(20).unwrap());
 /// let bucket = LocalTokenBucket::new(limit, StdClock);
 ///
-/// // 25 tokens never fit in a bucket with a burst capacity of 20
+/// // 25 tokens never fit in a bucket that holds at most 20.
 /// let err = bucket.try_consume(NonZeroU32::new(25).unwrap()).unwrap_err();
 /// assert!(matches!(err, TryConsumeError::ExceededBurstCapacity(_)));
 /// assert_eq!(err.earliest_retry_after(), None);
@@ -134,8 +128,7 @@ pub enum TryConsumeError {
 }
 
 impl TryConsumeError {
-    /// Returns the suggested duration to wait before retrying, or `None` if retrying
-    /// can never succeed.
+    /// How long to wait before retrying, or `None` if retrying can never succeed.
     pub fn earliest_retry_after(&self) -> Option<Duration> {
         match self {
             Self::RateLimited(rate_limited) => Some(rate_limited.earliest_retry_after()),

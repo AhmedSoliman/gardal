@@ -13,10 +13,10 @@ fn bench_consume(c: &mut Criterion) {
     let _quanta_thread = quanta::Upkeep::new(Duration::from_micros(10))
         .start()
         .unwrap();
-    let quanta_tb = TokenBucket::<PaddedAtomicStorage, _>::with_datum(limit, QuantaClock);
-    let std_tb = TokenBucket::<PaddedAtomicStorage, _>::with_datum(limit, StdClock);
-    let fast_tb = TokenBucket::<LocalStorage, _>::with_datum(limit, FastClock);
-    let fast_tb_padded = TokenBucket::<PaddedAtomicStorage, _>::with_datum(limit, FastClock);
+    let quanta_tb = TokenBucket::<PaddedAtomicStorage, _>::new(limit, QuantaClock);
+    let std_tb = TokenBucket::<PaddedAtomicStorage, _>::new(limit, StdClock);
+    let fast_tb = TokenBucket::<LocalStorage, _>::new(limit, FastClock);
+    let fast_tb_padded = TokenBucket::<PaddedAtomicStorage, _>::new(limit, FastClock);
     std::thread::sleep(Duration::from_secs(1));
     let mut group = c.benchmark_group("tokenbucket");
     group
@@ -24,7 +24,7 @@ fn bench_consume(c: &mut Criterion) {
         .sample_size(100)
         .bench_function("consume-mock-clock-local-storage", |b| {
             let clock = ManualClock::default();
-            let tb = TokenBucket::<LocalStorage, _>::with_datum(limit, &clock);
+            let tb = TokenBucket::<LocalStorage, _>::new(limit, &clock);
             clock.set(10.0);
             b.iter(|| {
                 let _x = std::hint::black_box(tb.try_consume_one());
@@ -32,7 +32,7 @@ fn bench_consume(c: &mut Criterion) {
         })
         .bench_function("consume-mock-clock-atomic-storage", |b| {
             let clock = ManualClock::default();
-            let tb = TokenBucket::<AtomicStorage, _>::with_datum(limit, &clock);
+            let tb = TokenBucket::<AtomicStorage, _>::new(limit, &clock);
             clock.set(10.0);
             b.iter(|| {
                 let _ = tb.consume_one();
@@ -40,7 +40,7 @@ fn bench_consume(c: &mut Criterion) {
         })
         .bench_function("consume-mock-clock-padded-atomic-storage", |b| {
             let clock = ManualClock::default();
-            let tb = TokenBucket::<PaddedAtomicStorage, _>::with_datum(limit, &clock);
+            let tb = TokenBucket::<PaddedAtomicStorage, _>::new(limit, &clock);
             clock.set(10.0);
             b.iter(|| {
                 let _ = tb.consume_one();
@@ -80,9 +80,7 @@ fn multi_threaded(c: &mut Criterion) {
     group
         .throughput(Throughput::Elements(1))
         .bench_function("padded", |b| {
-            let tb = Arc::new(TokenBucket::<PaddedAtomicStorage, _>::with_datum(
-                limit, FastClock,
-            ));
+            let tb = Arc::new(TokenBucket::<PaddedAtomicStorage, _>::new(limit, FastClock));
             b.iter_custom(|iters| {
                 let mut children = vec![];
                 let start = std::time::Instant::now();
@@ -102,9 +100,7 @@ fn multi_threaded(c: &mut Criterion) {
             })
         })
         .bench_function("atomic", |b| {
-            let tb = Arc::new(TokenBucket::<AtomicStorage, _>::with_datum(
-                limit, FastClock,
-            ));
+            let tb = Arc::new(TokenBucket::<AtomicStorage, _>::new(limit, FastClock));
             b.iter_custom(|iters| {
                 let mut children = vec![];
                 let start = std::time::Instant::now();
@@ -135,9 +131,7 @@ fn multi_threaded2(c: &mut Criterion) {
         .throughput(Throughput::Elements(1))
         .bench_function("padded", |b| {
             b.iter_custom(|iters| {
-                let tb = Arc::new(TokenBucket::<PaddedAtomicStorage, _>::with_datum(
-                    limit, FastClock,
-                ));
+                let tb = Arc::new(TokenBucket::<PaddedAtomicStorage, _>::new(limit, FastClock));
                 let mut children = vec![];
                 let start = std::time::Instant::now();
                 for _i in 0..THREADS {
@@ -156,9 +150,7 @@ fn multi_threaded2(c: &mut Criterion) {
         })
         .bench_function("atomic", |b| {
             b.iter_custom(|iters| {
-                let tb = Arc::new(TokenBucket::<AtomicStorage, _>::with_datum(
-                    limit, FastClock,
-                ));
+                let tb = Arc::new(TokenBucket::<AtomicStorage, _>::new(limit, FastClock));
                 let mut children = vec![];
                 let start = std::time::Instant::now();
                 for _i in 0..THREADS {

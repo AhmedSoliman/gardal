@@ -47,20 +47,17 @@ impl Debug for AtomicF64 {
     }
 }
 
-/// Thread-safe atomic storage implementation.
+/// Thread-safe storage: a single atomic value.
 ///
-/// Uses atomic operations for concurrent access to token bucket state.
-/// Suitable for multi-threaded scenarios where multiple threads need
-/// to access the same token bucket.
-///
-/// # Examples
+/// Like [`PaddedAtomicStorage`](crate::PaddedAtomicStorage), but without the padding, so it is
+/// just 8 bytes. Prefer it when you have many buckets (one per user, say) that are each used
+/// lightly; prefer the padded version for a few buckets used heavily by many threads.
 ///
 /// ```rust
-/// use gardal::{TokenBucket, Limit, AtomicStorage, StdClock};
+/// use gardal::{AtomicStorage, Limit, StdClock, TokenBucket};
 /// use std::num::NonZeroU32;
 ///
-/// let limit = Limit::per_second(NonZeroU32::new(100).unwrap());
-/// let bucket = TokenBucket::<AtomicStorage, _>::new(limit, StdClock);
+/// let bucket = TokenBucket::<AtomicStorage, _>::new(Limit::per_second(NonZeroU32::new(100).unwrap()), StdClock);
 /// ```
 #[derive(Debug)]
 pub struct AtomicStorage(AtomicF64);
@@ -86,23 +83,21 @@ impl TimeStorage for AtomicStorage {
     }
 }
 
-/// Shared atomic storage that can be cloned and shared across multiple token buckets.
+/// Thread-safe storage that clones share: an atomic value behind an [`Arc`].
 ///
-/// This allows multiple token bucket instances to share the same underlying
-/// token state, useful for implementing shared rate limiting across different
-/// components.
-///
-/// # Examples
+/// Cloning a bucket that uses this storage gives you another handle to the same tokens. Hand the
+/// clones to different threads or components, and they all respect one limit together.
 ///
 /// ```rust
-/// use gardal::{TokenBucket, Limit, AtomicSharedStorage, ManualClock};
+/// use gardal::{AtomicSharedStorage, Limit, StdClock, TokenBucket};
 /// use std::num::NonZeroU32;
-/// use std::sync::Arc;
 ///
-/// let limit = Limit::per_second(NonZeroU32::new(100).unwrap());
-/// let clock = Arc::new(ManualClock::new(0.0));
-/// let bucket1 = TokenBucket::<AtomicSharedStorage, _>::new(limit, Arc::clone(&clock));
-/// let bucket2 = bucket1.clone(); // Shares the same token state
+/// let bucket = TokenBucket::<AtomicSharedStorage, _>::new(Limit::per_second(NonZeroU32::new(10).unwrap()), StdClock);
+/// let other = bucket.clone();
+///
+/// assert!(bucket.consume(NonZeroU32::new(10).unwrap()).is_some());
+/// // The clone draws from the same, now empty, bucket.
+/// assert!(other.consume_one().is_none());
 /// ```
 #[derive(Debug, Clone)]
 pub struct AtomicSharedStorage(Arc<AtomicF64>);

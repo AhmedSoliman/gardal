@@ -3,18 +3,33 @@ mod cache_padded;
 pub mod local;
 pub mod padded_atomic;
 
-/// Storage abstraction used by [`TokenBucket`](crate::TokenBucket).
+/// Where a token bucket keeps its state.
 ///
-/// Implementations can provide either atomic or non-atomic access to the
-/// underlying timestamp depending on the desired level of concurrency.
+/// A bucket's whole state is one `f64`: the time at which it was (or will be) empty. The storage
+/// decides how that number is kept, which decides whether the bucket can be used from several
+/// threads and whether clones share it.
+///
+/// | Storage | Use from many threads | Clones share tokens | Notes |
+/// |---|---|---|---|
+/// | [`PaddedAtomicStorage`](crate::PaddedAtomicStorage) | yes | can't be cloned | The default. Best for busy buckets used by many threads |
+/// | [`AtomicStorage`](crate::AtomicStorage) | yes | can't be cloned | Smaller; fine when there are many buckets that aren't very busy |
+/// | [`PaddedAtomicSharedStorage`](crate::PaddedAtomicSharedStorage) | yes | yes | Behind [`SharedTokenBucket`](crate::SharedTokenBucket) |
+/// | [`AtomicSharedStorage`](crate::AtomicSharedStorage) | yes | yes | Smaller shared variant |
+/// | [`LocalStorage`](crate::LocalStorage) | no | can't be cloned | Fastest; for a bucket used by one thread |
+///
+/// A bucket with non-shared storage can still be shared through a reference or an `Arc`; the
+/// shared storages are convenient when you want to hand out owned copies of the same bucket.
+///
+/// This trait is sealed: the storages above are the only implementations.
 pub trait TimeStorage: crate::private::Sealed {
-    /// Create a new storage policy with the provided zero time.
+    /// Creates the storage holding `zero_time`.
     fn new(zero_time: f64) -> Self;
-    /// Load the current zero time.
+    /// Reads the stored zero time.
     fn load(&self) -> f64;
-    /// Store the zero time.
+    /// Replaces the stored zero time.
     fn store(&self, value: f64);
-    /// Compare and exchange the zero time.
+    /// Replaces the zero time with `new` if it is still `current`; otherwise returns the
+    /// value it found. May fail spuriously, so callers retry in a loop.
     fn compare_exchange_weak(&self, current: f64, new: f64) -> Result<(), f64>;
 }
 

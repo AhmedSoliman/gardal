@@ -1,34 +1,18 @@
 #![doc = include_str!("../README.md")]
 #![warn(missing_docs)]
 //!
-//! # Core Components
+//! ## API map
 //!
-//! - [`TokenBucket`] - The main token bucket implementation with pluggable storage and clock
-//! - [`Limit`] - Configuration for rate and burst limits
-//! - [`Clock`] trait and implementations for time sources
-//! - Storage implementations for different concurrency needs
-//!
-//! # Quick Start
-//!
-//! ```rust
-//! use std::num::NonZeroU32;
-//!
-//! use gardal::{AtomicTokenBucket, Limit, StdClock};
-//!
-//! // Create a rate limit: 10 tokens per second, burst of 20
-//! let limit = Limit::per_second_and_burst(
-//!     NonZeroU32::new(10).unwrap(),
-//!     NonZeroU32::new(20).unwrap()
-//! );
-//!
-//! // Create token bucket
-//! let bucket = AtomicTokenBucket::new(limit, StdClock);
-//!
-//! // Try to consume tokens
-//! if let Some(tokens) = bucket.consume(NonZeroU32::new(5).unwrap()) {
-//!     println!("Consumed {} tokens", tokens.as_u64());
-//! }
-//! ```
+//! - [`TokenBucket`]: the rate limiter. Start here; its documentation explains how buckets
+//!   work and how to choose between the ways of taking tokens.
+//! - [`Limit`]: the rate and the burst.
+//! - [`Clock`]: where buckets read the time from, with a guide to the built-in clocks.
+//! - [`TimeStorage`]: where buckets keep their state, with a guide to the storage options.
+//! - [`Tokens`], [`RateLimited`], [`TryConsumeError`] and [`ExceededBurstCapacity`]: what the
+//!   `consume*` methods return.
+//! - [`RawTokenBucket`]: a bucket without its clock and limit, for keeping many buckets
+//!   cheaply.
+//! - `gardal::futures` (`async` feature): throttling for streams.
 
 mod bucket;
 mod clock;

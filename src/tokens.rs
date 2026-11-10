@@ -1,21 +1,24 @@
 use std::num::NonZero;
 
-/// Represents a non-zero number of consumed tokens.
+/// Tokens taken from a bucket: always at least one.
 ///
-/// This type guarantees that at least one token was consumed, making it safe
-/// to use in contexts where zero tokens would be meaningless.
+/// The `consume*` methods return `Tokens` to tell you how many tokens you got. That matters for
+/// [`saturating_consume`](crate::TokenBucket::saturating_consume), which can give you fewer than
+/// you asked for. Read the count with [`as_u64`](Self::as_u64).
 ///
-/// # Examples
+/// `Tokens` converts into an `f64`, so tokens you end up not needing can go straight back with
+/// [`add_tokens`](crate::TokenBucket::add_tokens):
 ///
 /// ```rust
-/// use gardal::{LocalTokenBucket, Limit, StdClock};
+/// use gardal::{Limit, LocalTokenBucket, StdClock};
 /// use std::num::NonZeroU32;
 ///
-/// let limit = Limit::per_second(NonZeroU32::new(10).unwrap());
-/// let bucket = LocalTokenBucket::new(limit, StdClock);
+/// let bucket = LocalTokenBucket::new(Limit::per_second(NonZeroU32::new(10).unwrap()), StdClock);
 ///
-/// if let Some(tokens) = bucket.consume_one() {
-///     println!("Consumed {} tokens", tokens.as_u64());
+/// if let Some(tokens) = bucket.consume(NonZeroU32::new(5).unwrap()) {
+///     assert_eq!(tokens.as_u64(), 5);
+///     // The work was cancelled: give the tokens back.
+///     bucket.add_tokens(tokens);
 /// }
 /// ```
 // The token count is stored as the bit pattern of a strictly positive `f64`. For positive
@@ -33,28 +36,15 @@ impl std::fmt::Debug for Tokens {
 }
 
 impl Tokens {
-    /// Creates a new `Tokens` instance from a non-zero value.
+    /// Creates `Tokens` holding `value` tokens.
     ///
-    /// # Arguments
-    ///
-    /// * `value` - A non-zero number of tokens
+    /// Buckets create `Tokens` for you; this is mostly useful in tests and wrappers.
     pub fn new(value: NonZero<u64>) -> Self {
         let f_value = value.get() as f64;
         Self::new_unchecked(f_value)
     }
 
-    /// Creates a new `Tokens` instance from a floating-point value.
-    ///
-    /// Returns `None` if the value is zero or negative.
-    ///
-    /// # Arguments
-    ///
-    /// * `value` - Number of tokens as a floating-point value
-    ///
-    /// # Returns
-    ///
-    /// * `Some(Tokens)` if value > 0
-    /// * `None` if value <= 0
+    /// Creates `Tokens` from an `f64`, or `None` if `value` isn't greater than zero.
     pub fn new_checked(value: f64) -> Option<Self> {
         (value > 0.0).then(|| Self::new_unchecked(value))
     }
@@ -65,11 +55,7 @@ impl Tokens {
         Self(unsafe { NonZero::new_unchecked(value.to_bits()) })
     }
 
-    /// Returns the number of tokens as a 64-bit unsigned integer.
-    ///
-    /// # Returns
-    ///
-    /// The token count as a `u64`
+    /// The number of tokens.
     pub fn as_u64(&self) -> u64 {
         f64::from_bits(self.0.get()) as u64
     }

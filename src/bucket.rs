@@ -6,38 +6,90 @@ use crate::storage::TimeStorage;
 use crate::storage::padded_atomic::PaddedAtomicStorage;
 use crate::{Clock, Limit, RawTokenBucket, StdClock, Tokens};
 
-/// A "no bucket" value, for APIs that take an `Option<TokenBucket>` such as
-/// `gardal::futures::StreamExt::throttle` (requires the `async` feature): passing it
-/// disables throttling without any token bucket overhead.
+/// "No bucket": pass this where an `Option<TokenBucket>` is expected to turn rate limiting
+/// off.
+///
+/// For example, `stream.throttle(UNLIMITED_BUCKET)` (with the `async` feature) returns the
+/// stream's items as fast as they come, with no token bucket overhead, while keeping the same
+/// stream type as a throttled one.
 pub const UNLIMITED_BUCKET: Option<TokenBucket> = const { None };
 
-/// A token bucket rate limiter with configurable storage and clock implementations.
+/// A token bucket rate limiter.
 ///
-/// The token bucket algorithm allows for controlled rate limiting with burst capacity.
-/// Tokens are added to the bucket at a steady rate, and operations consume tokens.
-/// When the bucket is empty, operations are rate limited.
+/// # How it works
 ///
-/// # Type Parameters
+/// Picture a bucket that holds tokens. Tokens drip in at a steady rate until the bucket is
+/// full. Before doing a unit of work, you take a token out (or several, for bigger work). When
+/// the bucket is empty, the work has to wait or be turned away. On average this allows the
+/// limit's rate, while still letting short bursts through when the bucket is full. Both
+/// numbers come from the [`Limit`].
 ///
-/// - `S`: Storage strategy (default: [`PaddedAtomicStorage`] for concurrent access)
-/// - `C`: Clock implementation (use [`StdClock`] for standard library timing)
+/// Gardal keeps the whole state of a bucket in a single number, so taking tokens is one
+/// atomic update: it never blocks and never allocates.
 ///
-/// # Examples
+/// # Creating a bucket
+///
+/// You choose how a new bucket starts:
+///
+/// - [`new`](Self::new) starts **full**: the whole burst can be used right away, as if the
+///   bucket had been idle. This is what you want most of the time.
+/// - [`new_empty`](Self::new_empty) starts **empty** and fills up at the limit's rate, so
+///   nothing gets through until the first token arrives. Use it when a burst right at startup
+///   would hurt, for example when many instances of a service start at the same time and would
+///   all hit a shared dependency at once.
+/// - [`with_zero_time`](Self::with_zero_time) restores a bucket saved with
+///   [`get_zero_time`](Self::get_zero_time).
+///
+/// The two type parameters choose where the bucket's state lives (`S`, see [`TimeStorage`])
+/// and how it reads the time (`C`, see [`Clock`]). The defaults, [`PaddedAtomicStorage`] and
+/// [`StdClock`], are a good starting point. The aliases
+/// [`LocalTokenBucket`](crate::LocalTokenBucket), [`AtomicTokenBucket`](crate::AtomicTokenBucket)
+/// and [`SharedTokenBucket`](crate::SharedTokenBucket) cover the common storage choices.
+///
+/// # Taking tokens
+///
+/// Pick the method by what should happen when there aren't enough tokens:
+///
+/// | Method | If tokens are short |
+/// |---|---|
+/// | [`consume`](Self::consume) | Take nothing, return `None` |
+/// | [`try_consume`](Self::try_consume) | Take nothing, return how long to wait |
+/// | [`saturating_consume`](Self::saturating_consume) | Take what is there |
+/// | [`consume_with_borrow`](Self::consume_with_borrow) | Take them anyway, return how long to wait |
+///
+/// # Sharing a bucket
+///
+/// Every method takes `&self`, so a bucket can be used from many threads or tasks at once.
+/// Share it with a reference or an [`Arc`](std::sync::Arc), or use
+/// [`SharedTokenBucket`](crate::SharedTokenBucket), whose clones all draw from the same
+/// tokens. A [`LocalTokenBucket`](crate::LocalTokenBucket) is faster but can only be used
+/// from one thread.
+///
+/// # Example
+///
+/// Limiting the requests a service accepts, answering "429 Too Many Requests" when the limit
+/// is reached:
 ///
 /// ```rust
-/// use gardal::{LocalTokenBucket, Limit, StdClock};
+/// use gardal::{Limit, SharedTokenBucket, StdClock};
 /// use std::num::NonZeroU32;
 ///
-/// let limit = Limit::per_second_and_burst(
-///     NonZeroU32::new(10).unwrap(),
-///     NonZeroU32::new(20).unwrap()
-/// );
-/// let bucket = LocalTokenBucket::new(limit, StdClock);
+/// // 100 requests per second on average, at most 20 back to back.
+/// let limit = Limit::per_second(NonZeroU32::new(100).unwrap())
+///     .with_burst(NonZeroU32::new(20).unwrap());
+/// let limiter = SharedTokenBucket::new(limit, StdClock);
 ///
-/// // Try to consume 5 tokens
-/// if let Some(tokens) = bucket.consume(NonZeroU32::new(5).unwrap()) {
-///     println!("Successfully consumed {} tokens", tokens.as_u64());
+/// fn handle_request(limiter: &SharedTokenBucket<StdClock>) -> String {
+///     match limiter.try_consume_one() {
+///         Ok(_) => "200 OK".to_string(),
+///         Err(limited) => format!(
+///             "429 Too Many Requests (retry after {:?})",
+///             limited.earliest_retry_after()
+///         ),
+///     }
 /// }
+///
+/// assert_eq!(handle_request(&limiter), "200 OK");
 /// ```
 #[derive(Clone)]
 pub struct TokenBucket<S = PaddedAtomicStorage, C = StdClock> {
@@ -55,77 +107,76 @@ impl<S: TimeStorage, C: Clock> std::fmt::Debug for TokenBucket<S, C> {
     }
 }
 
-impl<C: Clock> TokenBucket<PaddedAtomicStorage, C> {
-    /// Creates a new token bucket with a custom clock implementation.
+impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
+    /// Creates a **full** bucket: the whole burst can be used right away.
     ///
-    /// Use this when you need a specific timing source, such as `FastClock` for high-performance
-    /// scenarios or `ManualClock` for testing.
-    ///
-    /// # Arguments
-    ///
-    /// * `limit` - The rate and burst configuration for the bucket
-    /// * `clock` - The clock implementation to use for timing
-    ///
-    /// # Examples
+    /// This is the usual way to create a bucket. Use [`new_empty`](Self::new_empty) if the
+    /// bucket should start empty instead.
     ///
     /// ```rust
-    /// use gardal::{TokenBucket, Limit, ManualClock};
+    /// use gardal::{Limit, LocalTokenBucket, StdClock};
+    /// use std::num::NonZeroU32;
+    ///
+    /// let bucket = LocalTokenBucket::new(Limit::per_second(NonZeroU32::new(10).unwrap()), StdClock);
+    /// assert_eq!(bucket.available(), 10.0);
+    /// ```
+    pub fn new(limit: Limit, clock: C) -> Self {
+        Self {
+            bucket: RawTokenBucket::new(&clock, &limit),
+            clock,
+            limit,
+        }
+    }
+
+    /// Creates an **empty** bucket that fills up at the limit's rate.
+    ///
+    /// Nothing can be taken until the first token arrives: with a rate of 10 per second, that
+    /// is after 0.1 seconds, and the full burst is only available after `burst / rate`
+    /// seconds. Use it to avoid letting a burst through right at startup; use
+    /// [`new`](Self::new) to start full.
+    ///
+    /// ```rust
+    /// use gardal::{Limit, LocalTokenBucket, ManualClock};
+    /// use std::num::NonZeroU32;
+    /// use std::sync::Arc;
+    ///
+    /// let clock = Arc::new(ManualClock::new(0.0));
+    /// let bucket = LocalTokenBucket::new_empty(
+    ///     Limit::per_second(NonZeroU32::new(10).unwrap()),
+    ///     Arc::clone(&clock),
+    /// );
+    /// assert!(bucket.consume_one().is_none());
+    ///
+    /// clock.advance(0.1);
+    /// assert!(bucket.consume_one().is_some());
+    /// ```
+    pub fn new_empty(limit: Limit, clock: C) -> Self {
+        Self {
+            bucket: RawTokenBucket::new_empty(&clock),
+            clock,
+            limit,
+        }
+    }
+
+    /// Restores a bucket from a zero time saved with [`get_zero_time`](Self::get_zero_time).
+    ///
+    /// With the built-in clocks the zero time is a point in wall-clock time, so a bucket can be
+    /// saved before a restart (or sent to another process) and restored with the tokens it had,
+    /// plus whatever it refilled in the meantime.
+    ///
+    /// ```rust
+    /// use gardal::{Limit, LocalTokenBucket, StdClock};
     /// use std::num::NonZeroU32;
     ///
     /// let limit = Limit::per_second(NonZeroU32::new(10).unwrap());
-    /// let clock = ManualClock::new(0.0);
-    /// let bucket = TokenBucket::with_clock(limit, clock);
+    /// let bucket = LocalTokenBucket::new(limit, StdClock);
+    /// let _ = bucket.consume(NonZeroU32::new(8).unwrap());
+    ///
+    /// let saved: f64 = bucket.get_zero_time();
+    /// // ... later ...
+    /// let restored = LocalTokenBucket::with_zero_time(limit, StdClock, saved);
+    /// assert!(restored.available() < 3.0);
     /// ```
-    pub fn with_clock(limit: Limit, clock: C) -> Self {
-        Self {
-            bucket: RawTokenBucket::<PaddedAtomicStorage, C>::new(&clock),
-            clock,
-            limit,
-        }
-    }
-}
-
-impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
-    /// Creates a token bucket
-    ///
-    /// The time datum defaults to 0.0 which means that the bucket will be initially full
-    /// in case you are using one of the standard clocks provided by this crate.
-    ///
-    /// # Arguments
-    ///
-    /// * `limit` - The rate and burst configuration for the bucket
-    /// * `clock` - The clock implementation to use for timing.
-    pub fn new(limit: Limit, clock: C) -> Self {
-        Self {
-            bucket: RawTokenBucket::with_zero_time(0.0),
-            clock,
-            limit,
-        }
-    }
-
-    /// Creates a token bucket from custom storage and clock implementations.
-    ///
-    /// This provides maximum flexibility for advanced use cases requiring specific
-    /// storage strategies or clock implementations.
-    ///
-    /// # Arguments
-    ///
-    /// * `limit` - The rate and burst configuration for the bucket
-    /// * `clock` - The clock implementation to use for timing. It will use the clock's
-    ///   datum point as the zero time. This means that the bucket will be considered
-    ///   empty initially.
-    pub fn with_datum(limit: Limit, clock: C) -> Self {
-        Self {
-            bucket: RawTokenBucket::new(&clock),
-            clock,
-            limit,
-        }
-    }
-
-    /// Creates a token bucket from custom storage and clock implementations.
-    ///
-    /// This uses the custom zero time instead of the clock's datum. Useful if
-    /// you'd like to reconstruct a bucket that restores the state after a restart.
     pub fn with_zero_time(limit: Limit, clock: C, zero_time: f64) -> Self {
         Self {
             bucket: RawTokenBucket::with_zero_time(zero_time),
@@ -134,72 +185,51 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
         }
     }
 
-    /// Updates the rate limit configuration while preserving available tokens.
+    /// Changes the bucket's limit, keeping the tokens (or the debt) it currently has.
     ///
-    /// The current token balance is maintained proportionally when changing limits.
-    ///
-    /// # Arguments
-    ///
-    /// * `limit` - The new rate and burst configuration
-    pub fn reset(&mut self, limit: Limit) {
-        let now = self.clock.now();
-        let available = self.bucket.balance_at(now, &self.limit);
-        self.limit = limit;
-        self.bucket.set_capacity(available, now, limit.rate);
-    }
-
-    /// Consumes the bucket and returns a new one with updated rate limits.
-    ///
-    /// Similar to [`reset`](Self::reset) but takes ownership and returns a new bucket.
-    ///
-    /// # Arguments
-    ///
-    /// * `limit` - The new rate and burst configuration
-    ///
-    /// # Returns
-    ///
-    /// A new token bucket with the updated configuration
-    pub fn update_limit(self, limit: Limit) -> Self {
-        let now = self.clock.now();
-        let available = self.bucket.balance_at(now, &self.limit);
-        let mut new = Self {
-            bucket: self.bucket,
-            clock: self.clock,
-            limit,
-        };
-        new.bucket.set_capacity(available, now, new.limit.rate);
-        new
-    }
-
-    /// Attempts to consume exactly the specified number of tokens.
-    ///
-    /// This is the fastest consumption method. Returns `Some(tokens)` if successful,
-    /// or `None` if insufficient tokens are available.
-    ///
-    /// For wait time estimates when tokens are unavailable, use [`try_consume`](Self::try_consume).
-    ///
-    /// # Arguments
-    ///
-    /// * `to_consume` - Number of tokens to consume
-    ///
-    /// # Returns
-    ///
-    /// * `Some(Tokens)` - Successfully consumed tokens
-    /// * `None` - Insufficient tokens available
-    ///
-    /// # Examples
+    /// If the new burst is smaller than the tokens in the bucket, the bucket is capped at the
+    /// new burst. See [`update_limit`](Self::update_limit) for a version that takes and
+    /// returns the bucket by value.
     ///
     /// ```rust
-    /// use gardal::{LocalTokenBucket, Limit, StdClock};
+    /// use gardal::{Limit, LocalTokenBucket, StdClock};
     /// use std::num::NonZeroU32;
     ///
-    /// let limit = Limit::per_second(NonZeroU32::new(10).unwrap());
-    /// let bucket = LocalTokenBucket::new(limit, StdClock);
+    /// let mut bucket = LocalTokenBucket::new(Limit::per_second(NonZeroU32::new(10).unwrap()), StdClock);
+    /// bucket.reset(Limit::per_second(NonZeroU32::new(100).unwrap()));
+    /// assert_eq!(bucket.limit().rate_per_second(), 100.0);
+    /// ```
+    pub fn reset(&mut self, limit: Limit) {
+        self.bucket.reset(&self.clock, &self.limit, &limit);
+        self.limit = limit;
+    }
+
+    /// Returns the bucket with a new limit, keeping the tokens (or the debt) it currently has.
     ///
-    /// if let Some(tokens) = bucket.consume(NonZeroU32::new(5).unwrap()) {
-    ///     println!("Consumed {} tokens", tokens.as_u64());
-    /// } else {
-    ///     println!("Not enough tokens available");
+    /// Same as [`reset`](Self::reset), but takes the bucket by value.
+    pub fn update_limit(mut self, limit: Limit) -> Self {
+        self.reset(limit);
+        self
+    }
+
+    /// Takes exactly `to_consume` tokens if the bucket has them; otherwise takes nothing and
+    /// returns `None`.
+    ///
+    /// This is the cheapest check. Use it when work that doesn't fit the limit can simply be
+    /// skipped, and use [`try_consume`](Self::try_consume) when you want to know how long to
+    /// wait instead.
+    ///
+    /// ```rust
+    /// use gardal::{Limit, LocalTokenBucket, StdClock};
+    /// use std::num::NonZeroU32;
+    ///
+    /// // Log at most 10 warnings per second; drop the rest.
+    /// let log_limit = LocalTokenBucket::new(Limit::per_second(NonZeroU32::new(10).unwrap()), StdClock);
+    ///
+    /// for i in 0..100 {
+    ///     if log_limit.consume(NonZeroU32::MIN).is_some() {
+    ///         println!("warning #{i}");
+    ///     }
     /// }
     /// ```
     #[must_use]
@@ -207,68 +237,42 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
         self.bucket.consume(to_consume, &self.clock, &self.limit)
     }
 
-    /// Attempts to consume exactly one token.
-    ///
-    /// Convenience method equivalent to `consume(1)`.
-    ///
-    /// # Returns
-    ///
-    /// * `Some(Tokens)` - Successfully consumed one token
-    /// * `None` - No tokens available
+    /// Takes one token if the bucket has one. Same as [`consume`](Self::consume) with `1`.
     #[must_use]
     pub fn consume_one(&self) -> Option<Tokens> {
         self.bucket
             .consume(NonZeroU32::MIN, &self.clock, &self.limit)
     }
 
-    /// Attempts to consume one token with wait time information.
+    /// Takes one token, or returns how long to wait until one is available.
     ///
-    /// Convenience method equivalent to `try_consume(1)`.
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(Tokens)` - Successfully consumed one token
-    /// * `Err(RateLimited)` - Rate limited with suggested wait time
+    /// Same as [`try_consume`](Self::try_consume) with `1`, but the error is always a
+    /// [`RateLimited`]: one token always fits in the bucket.
     pub fn try_consume_one(&self) -> Result<Tokens, RateLimited> {
         self.bucket.try_consume_one(&self.clock, &self.limit)
     }
 
-    /// Attempts to consume tokens with detailed rate limiting information.
+    /// Takes exactly `to_consume` tokens if the bucket has them; otherwise takes nothing and
+    /// tells you how long to wait.
     ///
-    /// Unlike [`consume`](Self::consume), this method provides an estimate of how long
-    /// to wait before retrying when tokens are unavailable.
-    ///
-    /// # Arguments
-    ///
-    /// * `to_consume` - Number of tokens to consume
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(Tokens)` - Successfully consumed tokens
-    /// * `Err(TryConsumeError::RateLimited(_))` - Rate limited with suggested retry time
-    /// * `Err(TryConsumeError::ExceededBurstCapacity(_))` - More tokens were requested than
-    ///   the burst capacity, so the request can never succeed
-    ///
-    /// To consume a single token, [`try_consume_one`](Self::try_consume_one) returns
-    /// [`RateLimited`] directly since one token always fits the burst capacity.
-    ///
-    /// # Examples
+    /// On failure, [`TryConsumeError::earliest_retry_after`] is the time until the bucket will
+    /// have enough tokens, assuming nobody else takes them first. If `to_consume` is larger
+    /// than the burst, the bucket can never hold that many tokens and the error is
+    /// [`TryConsumeError::ExceededBurstCapacity`].
     ///
     /// ```rust
-    /// use gardal::{LocalTokenBucket, Limit, StdClock, TryConsumeError};
+    /// use gardal::{Limit, LocalTokenBucket, StdClock, TryConsumeError};
     /// use std::num::NonZeroU32;
     ///
-    /// let limit = Limit::per_second(NonZeroU32::new(10).unwrap());
-    /// let bucket = LocalTokenBucket::new(limit, StdClock);
+    /// let bucket = LocalTokenBucket::new(Limit::per_second(NonZeroU32::new(10).unwrap()), StdClock);
     ///
     /// match bucket.try_consume(NonZeroU32::new(5).unwrap()) {
-    ///     Ok(tokens) => println!("Consumed {} tokens", tokens.as_u64()),
-    ///     Err(TryConsumeError::RateLimited(rate_limited)) => {
-    ///         let wait_time = rate_limited.earliest_retry_after();
-    ///         println!("Rate limited, retry in {:?}", wait_time);
+    ///     Ok(tokens) => println!("took {} tokens", tokens.as_u64()),
+    ///     Err(TryConsumeError::RateLimited(limited)) => {
+    ///         println!("try again in {:?}", limited.earliest_retry_after());
     ///     }
     ///     Err(TryConsumeError::ExceededBurstCapacity(_)) => {
-    ///         println!("5 tokens will never fit in this bucket");
+    ///         println!("5 tokens never fit in this bucket");
     ///     }
     /// }
     /// ```
@@ -280,34 +284,24 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
             .try_consume(to_consume, &self.clock, &self.limit)
     }
 
-    /// Consumes up to the requested number of tokens, returning whatever is available.
+    /// Takes as many whole tokens as the bucket has, up to `to_consume`.
     ///
-    /// This method will consume as many whole tokens as possible up to the requested amount,
-    /// without waiting. A fractional remainder stays in the bucket. Returns `None` if less
-    /// than one token is available.
-    ///
-    /// # Arguments
-    ///
-    /// * `to_consume` - Maximum number of tokens to consume
-    ///
-    /// # Returns
-    ///
-    /// * `Some(Tokens)` - Number of tokens actually consumed (may be less than requested)
-    /// * `None` - Less than one token available
-    ///
-    /// # Examples
+    /// Returns how many tokens were taken, or `None` if not even one was available. A fraction
+    /// of a token stays in the bucket. Useful for batches: process as many items as the limit
+    /// allows right now and keep the rest for later.
     ///
     /// ```rust
-    /// use gardal::{LocalTokenBucket, Limit, StdClock};
+    /// use gardal::{Limit, LocalTokenBucket, StdClock};
     /// use std::num::NonZeroU32;
     ///
-    /// let limit = Limit::per_second(NonZeroU32::new(10).unwrap());
-    /// let bucket = LocalTokenBucket::new(limit, StdClock);
+    /// let bucket = LocalTokenBucket::new(Limit::per_second(NonZeroU32::new(10).unwrap()), StdClock);
+    /// let mut queue: Vec<u32> = (0..25).collect();
     ///
-    /// // Request 100 tokens, but only get what's available
-    /// if let Some(tokens) = bucket.saturating_consume(NonZeroU32::new(100).unwrap()) {
-    ///     println!("Got {} tokens (may be less than 100)", tokens.as_u64());
+    /// if let Some(tokens) = bucket.saturating_consume(NonZeroU32::new(25).unwrap()) {
+    ///     let batch: Vec<u32> = queue.drain(..tokens.as_u64() as usize).collect();
+    ///     assert_eq!(batch.len(), 10); // the bucket held 10 tokens
     /// }
+    /// assert_eq!(queue.len(), 15);
     /// ```
     #[must_use]
     pub fn saturating_consume(&self, to_consume: impl Into<NonZeroU32>) -> Option<Tokens> {
@@ -315,64 +309,52 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
             .saturating_consume(to_consume, &self.clock, &self.limit)
     }
 
-    /// Returns unused tokens to the bucket or manually adds tokens.
+    /// Puts tokens back into the bucket.
     ///
-    /// This operation respects the bucket's burst capacity and will not cause overflow.
-    /// Useful for returning tokens from cancelled operations.
-    ///
-    /// # Arguments
-    ///
-    /// * `tokens` - Number of tokens to add back to the bucket
-    ///
-    /// # Examples
+    /// Use it to return tokens you took but didn't use, for example when you reserved tokens
+    /// for a batch and processed fewer items. Returned tokens first pay off any debt, and the
+    /// bucket never holds more than its burst.
     ///
     /// ```rust
-    /// use gardal::{LocalTokenBucket, Limit, StdClock};
+    /// use gardal::{Limit, LocalTokenBucket, StdClock};
     /// use std::num::NonZeroU32;
     ///
-    /// let limit = Limit::per_second(NonZeroU32::new(10).unwrap());
-    /// let bucket = LocalTokenBucket::new(limit, StdClock);
+    /// let bucket = LocalTokenBucket::new(Limit::per_second(NonZeroU32::new(10).unwrap()), StdClock);
+    /// let reserved = bucket.consume(NonZeroU32::new(8).unwrap()).unwrap();
     ///
-    /// // Return 5 tokens to the bucket
-    /// bucket.add_tokens(5.0);
+    /// let used = 3;
+    /// bucket.add_tokens((reserved.as_u64() - used) as u32);
+    /// assert!(bucket.available() > 6.9); // 2 left over, plus the 5 returned
     /// ```
     pub fn add_tokens(&self, tokens: impl Into<f64>) {
         self.bucket.add_tokens(tokens, &self.limit)
     }
 
-    /// Consumes tokens by borrowing from future capacity.
+    /// Takes `to_consume` tokens even if the bucket doesn't have them, going into debt, and
+    /// returns how long to wait until the debt is paid.
     ///
-    /// This allows consuming more tokens than currently available by going into "debt".
-    /// The bucket will need time to replenish before more tokens can be consumed.
+    /// This is the right tool for work that must happen but should be paced: do the work, then
+    /// wait the returned duration (if any) before the next piece. While the bucket is in debt,
+    /// other callers find it empty, so the limit holds for everyone sharing the bucket.
     ///
-    /// # Arguments
+    /// Returns `Ok(None)` if the tokens were there and nothing was borrowed. Returns
+    /// [`ExceededBurstCapacity`] if `to_consume` is larger than the burst; see
+    /// [`saturating_consume_with_borrow`](Self::saturating_consume_with_borrow) to cap the
+    /// request instead.
     ///
-    /// * `to_consume` - Number of tokens to consume
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(None)` - Tokens consumed immediately without borrowing
-    /// * `Ok(Some(duration))` - Tokens consumed with borrowing; wait time until debt is paid
-    /// * `Err(ExceededBurstCapacity)` - Cannot borrow more than burst capacity
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use gardal::{LocalTokenBucket, Limit, StdClock};
+    /// ```rust,no_run
+    /// use gardal::{Limit, LocalTokenBucket, StdClock};
     /// use std::num::NonZeroU32;
     ///
-    /// let limit = Limit::per_second_and_burst(
-    ///     NonZeroU32::new(10).unwrap(),
-    ///     NonZeroU32::new(20).unwrap()
-    /// );
-    /// let bucket = LocalTokenBucket::new(limit, StdClock);
+    /// // Copy files at no more than 50 MiB/s, one token per MiB.
+    /// let bucket = LocalTokenBucket::new(Limit::per_second(NonZeroU32::new(50).unwrap()), StdClock);
     ///
-    /// match bucket.consume_with_borrow(NonZeroU32::new(15).unwrap()) {
-    ///     Ok(Some(wait_time)) => {
-    ///         println!("Borrowed tokens, wait {:?} before next operation", wait_time);
+    /// for file_size_mib in [10u32, 30, 20, 40] {
+    ///     // copy_file(...);
+    ///     let cost = NonZeroU32::new(file_size_mib).unwrap();
+    ///     if let Some(wait) = bucket.consume_with_borrow(cost).unwrap() {
+    ///         std::thread::sleep(wait);
     ///     }
-    ///     Ok(None) => println!("Consumed without borrowing"),
-    ///     Err(_) => println!("Cannot borrow more than burst capacity"),
     /// }
     /// ```
     pub fn consume_with_borrow(
@@ -383,20 +365,12 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
             .consume_with_borrow(to_consume, &self.clock, &self.limit)
     }
 
-    /// Consumes tokens with borrowing, limited to burst capacity.
+    /// Like [`consume_with_borrow`](Self::consume_with_borrow), but asks for at most the
+    /// burst instead of failing when `to_consume` is larger.
     ///
-    /// Similar to [`consume_with_borrow`](Self::consume_with_borrow) but automatically
-    /// limits the request to the burst capacity instead of returning an error.
-    ///
-    /// # Arguments
-    ///
-    /// * `to_consume` - Number of tokens to consume (capped at burst capacity)
-    ///
-    /// # Returns
-    ///
-    /// A tuple of:
-    /// * `Option<Tokens>` - Number of tokens consumed (None if no borrowing occurred)
-    /// * `Duration` - Wait time until the debt is paid (zero if no borrowing)
+    /// Returns the time to wait until the debt is paid (zero if nothing was borrowed), together
+    /// with the number of tokens charged when the bucket had to borrow (`None` when the tokens
+    /// were available).
     #[must_use]
     pub fn saturating_consume_with_borrow(
         &self,
@@ -414,40 +388,29 @@ impl<S: TimeStorage, C: Clock> TokenBucket<S, C> {
             .saturating_borrow_nap(to_consume, &self.clock, &self.limit)
     }
 
-    /// Returns the number of tokens currently available for consumption.
+    /// The number of tokens that can be taken right now.
     ///
-    /// This value is always non-negative. If the bucket is in debt from borrowing,
-    /// this returns zero.
-    ///
-    /// # Returns
-    ///
-    /// Number of tokens available for immediate consumption
+    /// Never negative: a bucket in debt reports `0.0`. Use [`balance`](Self::balance) to see
+    /// the debt. The value can include a fraction of a token.
     pub fn available(&self) -> f64 {
         self.bucket.available(&self.clock, &self.limit)
     }
 
-    /// Returns the current token balance, which may be negative if in debt.
-    ///
-    /// Unlike [`available`](Self::available), this can return negative values
-    /// when tokens have been borrowed from future capacity.
-    ///
-    /// # Returns
-    ///
-    /// Current token balance (negative indicates debt)
+    /// The bucket's balance: like [`available`](Self::available), but negative while the
+    /// bucket is in debt after [`consume_with_borrow`](Self::consume_with_borrow).
     pub fn balance(&self) -> f64 {
         self.bucket.balance(&self.clock, &self.limit)
     }
 
-    /// Returns a reference to the current rate limit configuration.
-    ///
-    /// # Returns
-    ///
-    /// Reference to the [`Limit`] configuration
+    /// The bucket's current limit.
     pub fn limit(&self) -> &Limit {
         &self.limit
     }
 
-    /// Returns the internal timepoint of the bucket.
+    /// The bucket's complete state, as a single number.
+    ///
+    /// This is the time (in the clock's seconds) at which the bucket was, or will be, empty.
+    /// Save it to restore the bucket later with [`with_zero_time`](Self::with_zero_time).
     pub fn get_zero_time(&self) -> f64 {
         self.bucket.get_zero_time()
     }
@@ -469,7 +432,7 @@ mod tests {
         let clock = Arc::new(ManualClock::default());
         // initially, the bucket is empty
         let limit = Limit::per_second_and_burst(nonzero!(10u32), nonzero!(20u32));
-        let tb = TokenBucket::<PaddedAtomicStorage, _>::with_clock(limit, Arc::clone(&clock));
+        let tb = TokenBucket::<PaddedAtomicStorage, _>::new_empty(limit, Arc::clone(&clock));
         // initially empty
         assert!(tb.consume(nonzero!(1u32)).is_none());
         // one seconds later, the bucket is filled up by 10 tokens/s with burst capacity of 20
@@ -501,7 +464,7 @@ mod tests {
         let clock = Arc::new(ManualClock::default());
         // initially, the bucket is empty
         let limit = Limit::per_second_and_burst(nonzero!(10u32), nonzero!(20u32));
-        let mut tb = TokenBucket::<PaddedAtomicStorage, _>::with_clock(limit, Arc::clone(&clock));
+        let mut tb = TokenBucket::<PaddedAtomicStorage, _>::new_empty(limit, Arc::clone(&clock));
         // initially empty
         assert!(tb.consume(nonzero!(1u32)).is_none());
         // one seconds later, the bucket is filled up by 10 tokens/s with burst capacity of 20
@@ -521,11 +484,63 @@ mod tests {
     }
 
     #[test]
+    fn new_starts_full_and_new_empty_starts_empty() {
+        use crate::LocalTokenBucket;
+
+        // A rate that doesn't divide the burst evenly, so rounding could leave a bucket a hair
+        // short of full.
+        let limit = Limit::per_second_and_burst(nonzero!(3u32), nonzero!(10u32));
+
+        // Full with any clock, including a manual clock at time 0.0.
+        let clock = Arc::new(ManualClock::new(0.0));
+        let full = LocalTokenBucket::new(limit, Arc::clone(&clock));
+        assert_eq!(10.0, full.available());
+        assert_eq!(10, full.consume(nonzero!(10u32)).unwrap().as_u64());
+        let real = LocalTokenBucket::new(limit, StdClock);
+        assert_eq!(10, real.consume(nonzero!(10u32)).unwrap().as_u64());
+
+        // Empty as of its creation, no matter how long the clock has been running.
+        clock.set(1000.0);
+        let empty = LocalTokenBucket::new_empty(limit, Arc::clone(&clock));
+        assert_eq!(0.0, empty.available());
+        clock.advance(1.0);
+        assert!((empty.available() - 3.0).abs() < 1e-9);
+        let real = LocalTokenBucket::new_empty(limit, StdClock);
+        assert!(real.consume_one().is_none());
+    }
+
+    #[test]
+    fn raw_reset_keeps_tokens() {
+        use crate::LocalStorage;
+
+        let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
+        let clock = ManualClock::new(0.0);
+        let old = Limit::per_second(nonzero!(10u32));
+        let new = Limit::per_second(nonzero!(100u32));
+        let mut raw = RawTokenBucket::<LocalStorage, _>::new_empty(&&clock);
+        // 5 tokens at 10/s
+        clock.set(0.5);
+        assert!(close(5.0, raw.available(&&clock, &old)));
+        // switching to 100/s keeps the 5 tokens (it used to turn them into 50)
+        raw.reset(&&clock, &old, &new);
+        assert!(close(5.0, raw.available(&&clock, &new)));
+        // debt is kept too: take 15 out of 5, leaving a debt of 10
+        let wait = raw
+            .consume_with_borrow(nonzero!(15u32), &&clock, &new)
+            .unwrap()
+            .unwrap();
+        assert!(close(0.1, wait.as_secs_f64()));
+        assert!(close(-10.0, raw.balance(&&clock, &new)));
+        raw.reset(&&clock, &new, &old);
+        assert!(close(-10.0, raw.balance(&&clock, &old)));
+    }
+
+    #[test]
     fn fractional() {
         let clock = Arc::new(ManualClock::default());
         // initially, the bucket is empty
         let limit = Limit::per_minute(nonzero!(30u32)).with_burst(nonzero!(20u32));
-        let tb = TokenBucket::<PaddedAtomicStorage, _>::with_clock(limit, Arc::clone(&clock));
+        let tb = TokenBucket::<PaddedAtomicStorage, _>::new_empty(limit, Arc::clone(&clock));
         // initially empty
         assert!(tb.consume(nonzero!(1u32)).is_none());
         // two seconds later
@@ -554,7 +569,7 @@ mod tests {
     fn saturating_consume() {
         let clock = Arc::new(ManualClock::default());
         let limit = Limit::per_second_and_burst(nonzero!(5u32), nonzero!(10u32));
-        let tb = TokenBucket::<PaddedAtomicStorage, _>::with_clock(limit, Arc::clone(&clock));
+        let tb = TokenBucket::<PaddedAtomicStorage, _>::new_empty(limit, Arc::clone(&clock));
         clock.set(1.0);
         // after one second, we have 5 tokens available, so that's what we can consume, but we can
         // use saturating consume when requesting more than we can
@@ -579,7 +594,7 @@ mod tests {
     fn wait_to_consume() {
         let clock = Arc::new(ManualClock::default());
         let limit = Limit::per_minute(nonzero!(30u32)).with_burst(nonzero!(10u32));
-        let tb = TokenBucket::<PaddedAtomicStorage, _>::with_clock(limit, Arc::clone(&clock));
+        let tb = TokenBucket::<PaddedAtomicStorage, _>::new_empty(limit, Arc::clone(&clock));
         // at t=0 bucket empty; borrow 5 tokens should require waiting for 10.0 seconds. Note that
         // we didn't consume anything as a result.
         match tb.try_consume(nonzero!(5u32)) {
@@ -597,7 +612,7 @@ mod tests {
     fn try_consume_more_than_burst() {
         let clock = Arc::new(ManualClock::default());
         let limit = Limit::per_second_and_burst(nonzero!(10u32), nonzero!(20u32));
-        let tb = TokenBucket::<PaddedAtomicStorage, _>::with_clock(limit, Arc::clone(&clock));
+        let tb = TokenBucket::<PaddedAtomicStorage, _>::new_empty(limit, Arc::clone(&clock));
         // the bucket is full, but 25 tokens can never fit in a bucket of 20
         clock.set(100.0);
         assert_eq!(20.0, tb.available());
@@ -620,7 +635,7 @@ mod tests {
     fn borrow_future() {
         let clock = Arc::new(ManualClock::default());
         let limit = Limit::per_minute(nonzero!(30u32)).with_burst(nonzero!(10u32));
-        let tb = TokenBucket::<PaddedAtomicStorage, _>::with_clock(limit, Arc::clone(&clock));
+        let tb = TokenBucket::<PaddedAtomicStorage, _>::new_empty(limit, Arc::clone(&clock));
         // at t=0 bucket empty; borrow 5 tokens should require waiting for 10.0 seconds
         let maybe_wait = tb.consume_with_borrow(nonzero!(5u32));
         assert_eq!(10.0, maybe_wait.unwrap().unwrap().as_secs_f64());
@@ -671,7 +686,7 @@ mod tests {
         // shared with arc and atomic (owned)
         let clock = Arc::new(ManualClock::default());
         let limit = Limit::per_second_and_burst(nonzero!(1000u32), nonzero!(10_000u32));
-        let tb = TokenBucket::<PaddedAtomicStorage, _>::with_clock(limit, Arc::clone(&clock));
+        let tb = TokenBucket::<PaddedAtomicStorage, _>::new_empty(limit, Arc::clone(&clock));
         clock.set(10.0);
         let tb = std::sync::Arc::new(tb);
         std::thread::scope(|s| {
@@ -695,7 +710,7 @@ mod tests {
         // shared with atomic (reference)
         let clock = Arc::new(ManualClock::default());
         let limit = Limit::per_second_and_burst(nonzero!(1000u32), nonzero!(10_000u32));
-        let tb = TokenBucket::<PaddedAtomicStorage, _>::with_clock(limit, Arc::clone(&clock));
+        let tb = TokenBucket::<PaddedAtomicStorage, _>::new_empty(limit, Arc::clone(&clock));
         std::thread::scope(|s| {
             clock.set(10.0);
             // 4 threads, each consuming 2000 tokens, bursting to 8000 out of the 10k burst

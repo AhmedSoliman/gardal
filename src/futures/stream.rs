@@ -15,22 +15,10 @@ use crate::{bucket::TokenBucket, clock::Clock};
 use tokio::time::Instant;
 
 pin_project! {
-    /// A stream wrapper that applies throttling using a token bucket.
+    /// A stream that takes one token per item. Created by
+    /// [`StreamExt::throttle`](super::StreamExt::throttle).
     ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use gardal::{AtomicTokenBucket, Limit, StdClock};
-    /// use gardal::futures::ThrottledStream;
-    /// use futures::stream;
-    /// use std::num::NonZeroU32;
-    ///
-    /// let limit = Limit::per_second(NonZeroU32::new(10).unwrap());
-    /// let bucket = AtomicTokenBucket::new(limit, StdClock);
-    /// let stream = stream::iter(0..100);
-    ///
-    /// let throttled = ThrottledStream::new(stream, bucket);
-    /// ```
+    /// See the [module documentation](super) for how throttling works.
     pub struct ThrottledStream<S, ST, C>
     where
         S: Stream,
@@ -48,12 +36,9 @@ where
     ST: TimeStorage,
     C: Clock,
 {
-    /// Creates a new rate-limited stream.
+    /// Throttles `stream` with `bucket`, one token per item. Pass `None` for no throttling.
     ///
-    /// # Arguments
-    ///
-    /// * `stream` - The underlying stream to throttle
-    /// * `bucket` - The token bucket to use for throttling
+    /// Same as [`StreamExt::throttle`](super::StreamExt::throttle).
     pub fn new(stream: S, bucket: impl Into<Option<TokenBucket<ST, C>>>) -> Self {
         let unit_weight_fn: fn(&S::Item) -> NonZeroU32 = |_| NonZeroU32::MIN;
         Self {
@@ -61,46 +46,48 @@ where
         }
     }
 
-    /// Returns a reference to the current throttling configuration.
+    /// The bucket's limit, or `None` if the stream isn't throttled.
     pub fn limit(&self) -> Option<&Limit> {
         self.weighted_stream.limit()
     }
 
-    /// Returns the number of tokens currently available in the bucket.
-    ///
-    /// Returns zero if the bucket is in debt from borrowing.
+    /// The tokens the bucket has right now (see
+    /// [`TokenBucket::available`](crate::TokenBucket::available)), or `f64::MAX` if the stream
+    /// isn't throttled.
     pub fn available(&self) -> f64 {
         self.weighted_stream.available()
     }
 
-    /// Adds tokens back to the bucket.
-    ///
-    /// Useful for returning tokens from cancelled operations or manually
-    /// adding capacity.
-    ///
-    /// # Arguments
-    ///
-    /// * `tokens` - Number of tokens to add
+    /// Puts tokens back into the bucket (see
+    /// [`TokenBucket::add_tokens`](crate::TokenBucket::add_tokens)). Does nothing if the stream
+    /// isn't throttled.
     pub fn add_tokens(&self, tokens: impl Into<f64>) {
         self.weighted_stream.add_tokens(tokens)
     }
 
-    /// Consumes the throttled stream, returning the underlying stream.
+    /// Returns the inner stream.
+    ///
+    /// An item that was already taken from the inner stream and is waiting out its delay is
+    /// dropped.
     pub fn into_inner(self) -> S {
         self.weighted_stream.into_inner()
     }
 
-    /// Returns a reference to the underlying stream.
+    /// The inner stream.
     pub fn inner(&self) -> &S {
         self.weighted_stream.inner()
     }
 
-    /// Returns a mutable reference to the underlying stream.
+    /// The inner stream, mutably.
+    ///
+    /// Be careful not to take items from it directly: those would skip the throttling.
     pub fn inner_mut(&mut self) -> &mut S {
         self.weighted_stream.inner_mut()
     }
 
-    /// Returns a pinned mutable reference to the underlying stream.
+    /// The inner stream, pinned and mutable.
+    ///
+    /// Be careful not to take items from it directly: those would skip the throttling.
     pub fn inner_pin_mut(self: Pin<&mut Self>) -> Pin<&mut S> {
         self.project().weighted_stream.inner_pin_mut()
     }
@@ -120,14 +107,12 @@ where
 }
 
 pin_project! {
-    /// A stream that is throttled by a token bucket with weighted consumption.
-    /// Each item can consume a different number of tokens based on a weight function.
+    /// A stream that takes a chosen number of tokens per item. Created by
+    /// [`StreamExt::throttle_weighted`](super::StreamExt::throttle_weighted).
     ///
-    /// Items are charged when they are pulled from the inner stream, borrowing from future
-    /// capacity if needed; the item is then held back until the debt is paid. An item whose
-    /// weight exceeds the bucket's burst capacity is charged the burst capacity.
-    ///
-    /// Delays use Tokio timers, so the stream must be polled inside a Tokio runtime.
+    /// Tokens are taken when an item comes out of the inner stream, borrowing if the bucket is
+    /// short; the item is then held back until the debt is paid. An item heavier than the bucket's
+    /// burst is charged the burst. See the [module documentation](super) for more.
     pub struct WeightedStream<S, ST, C, F>
     where
         S: Stream,
@@ -154,30 +139,11 @@ where
     C: Clock,
     F: Fn(&S::Item) -> NonZeroU32,
 {
-    /// Creates a new weighted stream.
+    /// Throttles `stream` with `bucket`, taking `weight_fn(&item)` tokens per item. Pass `None` for
+    /// no throttling.
     ///
-    /// # Arguments
-    ///
-    /// * `stream` - The underlying stream to throttle
-    /// * `bucket` - The token bucket for throttling
-    /// * `weight_fn` - A function that determines how many tokens each item consumes
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use gardal::futures::WeightedStream;
-    /// use gardal::{LocalStorage, Limit, TokioClock, SharedTokenBucket};
-    /// use futures::stream;
-    /// use std::num::NonZeroU32;
-    ///
-    /// let limit = Limit::per_second_and_burst(NonZeroU32::new(10).unwrap(), NonZeroU32::new(10).unwrap());
-    /// let bucket = SharedTokenBucket::new(limit, TokioClock);
-    ///
-    /// let stream = stream::iter(vec!["small", "large", "medium"]);
-    /// let weighted_stream = WeightedStream::new(stream, bucket, |item: &&str| {
-    ///     NonZeroU32::new(item.len() as u32).unwrap_or(NonZeroU32::new(1).unwrap())
-    /// });
-    /// ```
+    /// Same as [`StreamExt::throttle_weighted`](super::StreamExt::throttle_weighted), which is
+    /// usually more convenient.
     pub fn new(stream: S, bucket: impl Into<Option<TokenBucket<ST, C>>>, weight_fn: F) -> Self {
         Self {
             stream,
@@ -189,14 +155,14 @@ where
         }
     }
 
-    /// Returns a reference to the current throttling configuration.
+    /// The bucket's limit, or `None` if the stream isn't throttled.
     pub fn limit(&self) -> Option<&Limit> {
         self.bucket.as_ref().map(|b| b.limit())
     }
 
-    /// Returns the number of tokens currently available in the bucket.
-    ///
-    /// Returns zero if the bucket is in debt from borrowing.
+    /// The tokens the bucket has right now (see
+    /// [`TokenBucket::available`](crate::TokenBucket::available)), or `f64::MAX` if the stream
+    /// isn't throttled.
     pub fn available(&self) -> f64 {
         if let Some(bucket) = &self.bucket {
             bucket.available()
@@ -205,41 +171,43 @@ where
         }
     }
 
-    /// Adds tokens back to the bucket.
-    ///
-    /// Useful for returning tokens from cancelled operations or manually
-    /// adding capacity.
-    ///
-    /// # Arguments
-    ///
-    /// * `tokens` - Number of tokens to add
+    /// Puts tokens back into the bucket (see
+    /// [`TokenBucket::add_tokens`](crate::TokenBucket::add_tokens)). Does nothing if the stream
+    /// isn't throttled.
     pub fn add_tokens(&self, tokens: impl Into<f64>) {
         if let Some(bucket) = &self.bucket {
             bucket.add_tokens(tokens)
         }
     }
 
-    /// Returns true if the throttled stream has staged pending item to be delivered.
+    /// Whether an item is waiting out its delay before being returned.
     pub fn has_pending_item(&self) -> bool {
         self.pending_item.is_some()
     }
 
-    /// Consumes the throttled stream, returning the underlying stream.
+    /// Returns the inner stream.
+    ///
+    /// An item that was already taken from the inner stream and is waiting out its delay is
+    /// dropped.
     pub fn into_inner(self) -> S {
         self.stream
     }
 
-    /// Returns a reference to the underlying stream.
+    /// The inner stream.
     pub fn inner(&self) -> &S {
         &self.stream
     }
 
-    /// Returns a mutable reference to the underlying stream.
+    /// The inner stream, mutably.
+    ///
+    /// Be careful not to take items from it directly: those would skip the throttling.
     pub fn inner_mut(&mut self) -> &mut S {
         &mut self.stream
     }
 
-    /// Returns a pinned mutable reference to the underlying stream.
+    /// The inner stream, pinned and mutable.
+    ///
+    /// Be careful not to take items from it directly: those would skip the throttling.
     pub fn inner_pin_mut(self: Pin<&mut Self>) -> Pin<&mut S> {
         self.project().stream
     }
@@ -328,12 +296,17 @@ mod tests {
     use nonzero_ext::nonzero;
     use tokio_stream::StreamExt;
 
+    /// A bucket that starts empty, so the tests exercise the delays.
+    fn empty_bucket(limit: Limit) -> TokenBucket<LocalStorage, TokioClock> {
+        TokenBucket::new_empty(limit, TokioClock)
+    }
+
     #[tokio::test(start_paused = true)]
     async fn test_throttled_stream() {
         let start = tokio::time::Instant::now();
         let stream = stream::iter(vec![1, 2, 3, 4, 5]);
         let limit = Limit::per_second_and_burst(nonzero!(1u32), nonzero!(1u32));
-        let bucket = TokenBucket::<LocalStorage, _>::with_datum(limit, TokioClock::default());
+        let bucket = empty_bucket(limit);
 
         let mut throttled_stream = std::pin::pin!(ThrottledStream::new(stream, bucket));
 
@@ -351,7 +324,7 @@ mod tests {
     async fn test_throttled_stream_burst() {
         let stream = stream::iter(vec![1, 2, 3, 4, 5]);
         let limit = Limit::per_second_and_burst(nonzero!(1u32), nonzero!(3u32));
-        let bucket = TokenBucket::<LocalStorage, _>::with_datum(limit, TokioClock::default());
+        let bucket = empty_bucket(limit);
 
         let mut throttled_stream = std::pin::pin!(ThrottledStream::new(stream, bucket));
 
@@ -370,7 +343,7 @@ mod tests {
     async fn test_throttled_stream_all_ready() {
         let stream = stream::iter(vec![1, 2, 3, 4, 5]);
         let limit = Limit::per_second(nonzero!(100000u32)).with_burst(nonzero!(1u32));
-        let bucket = TokenBucket::<LocalStorage, _>::with_datum(limit, TokioClock::default());
+        let bucket = empty_bucket(limit);
 
         let mut throttled_stream = std::pin::pin!(ThrottledStream::new(stream, bucket));
 
@@ -391,7 +364,7 @@ mod tests {
             .throttle(Duration::from_secs(2))
             .chain(stream::iter(vec![6, 7, 8, 9]));
         let limit = Limit::per_second_and_burst(nonzero!(1u32), nonzero!(3u32));
-        let bucket = TokenBucket::<LocalStorage, _>::with_datum(limit, TokioClock::default());
+        let bucket = empty_bucket(limit);
 
         let mut throttled_stream = std::pin::pin!(ThrottledStream::new(stream, bucket));
 
@@ -411,7 +384,7 @@ mod tests {
         let start = tokio::time::Instant::now();
         let stream = stream::iter(vec![1, 2, 3, 4, 5]);
         let limit = Limit::per_second_and_burst(nonzero!(1u32), nonzero!(1u32));
-        let bucket = TokenBucket::<LocalStorage, _>::with_datum(limit, TokioClock::default());
+        let bucket = empty_bucket(limit);
 
         let mut weighted_stream =
             std::pin::pin!(WeightedStream::new(stream, bucket, |_| nonzero!(1u32)));
@@ -431,7 +404,7 @@ mod tests {
         let start = tokio::time::Instant::now();
         let stream = stream::iter(vec![1, 2, 3, 4, 5]);
         let limit = Limit::per_second_and_burst(nonzero!(2u32), nonzero!(2u32));
-        let bucket = TokenBucket::<LocalStorage, _>::with_datum(limit, TokioClock::default());
+        let bucket = empty_bucket(limit);
 
         let mut weighted_stream = std::pin::pin!(WeightedStream::new(stream, bucket, |&item| {
             if item % 2 == 0 {
@@ -457,7 +430,7 @@ mod tests {
     async fn test_weighted_stream_with_burst() {
         let stream = stream::iter(vec![1, 2, 3, 4, 5]);
         let limit = Limit::per_second_and_burst(nonzero!(1u32), nonzero!(5u32));
-        let bucket = TokenBucket::<LocalStorage, _>::with_datum(limit, TokioClock::default());
+        let bucket = empty_bucket(limit);
 
         let mut weighted_stream = std::pin::pin!(WeightedStream::new(stream, bucket, |&item| {
             NonZeroU32::new(item as u32).unwrap_or(nonzero!(1u32))
@@ -482,7 +455,7 @@ mod tests {
         // (5 tokens) instead of panicking with `ExceededBurstCapacity`.
         let stream = stream::iter(vec![5u32, 10, 1]);
         let limit = Limit::per_second_and_burst(nonzero!(5u32), nonzero!(5u32));
-        let bucket = TokenBucket::<LocalStorage, _>::new(limit, TokioClock::default());
+        let bucket = TokenBucket::<LocalStorage, _>::new(limit, TokioClock);
 
         let mut weighted_stream = std::pin::pin!(WeightedStream::new(stream, bucket, |&item| {
             NonZeroU32::new(item).unwrap()
@@ -506,7 +479,7 @@ mod tests {
     async fn test_weighted_stream_empty() {
         let stream = stream::iter(Vec::<i32>::new());
         let limit = Limit::per_second_and_burst(nonzero!(1u32), nonzero!(1u32));
-        let bucket = TokenBucket::<LocalStorage, _>::with_datum(limit, TokioClock::default());
+        let bucket = empty_bucket(limit);
 
         let mut weighted_stream =
             std::pin::pin!(WeightedStream::new(stream, bucket, |_| nonzero!(1u32)));
@@ -523,7 +496,7 @@ mod tests {
     async fn test_weighted_stream_single_item() {
         let stream = stream::iter(vec![42]);
         let limit = Limit::per_second_and_burst(nonzero!(10u32), nonzero!(10u32));
-        let bucket = TokenBucket::<LocalStorage, _>::with_datum(limit, TokioClock::default());
+        let bucket = empty_bucket(limit);
 
         let mut weighted_stream =
             std::pin::pin!(WeightedStream::new(stream, bucket, |_| nonzero!(3u32)));
@@ -545,7 +518,7 @@ mod tests {
         // This test verifies that expensive items are properly delayed before being returned
         let stream = stream::iter(vec![10]); // Single expensive item
         let limit = Limit::per_second_and_burst(nonzero!(1u32), nonzero!(10u32)); // Enough burst for the item
-        let bucket = TokenBucket::<LocalStorage, _>::with_datum(limit, TokioClock::default());
+        let bucket = empty_bucket(limit);
 
         let mut weighted_stream = std::pin::pin!(WeightedStream::new(stream, bucket, |&item| {
             NonZeroU32::new(item as u32).unwrap_or(nonzero!(1u32)) // Item value determines token cost
@@ -563,7 +536,7 @@ mod tests {
         assert_eq!(item, 10);
 
         // The expensive item (10 tokens) should be delayed significantly
-        // With 1 token/sec rate and 10 token burst, it should take ~9 seconds
+        // The bucket starts empty and refills 1 token per second, so 10 tokens take 10 seconds
         assert!(
             delivery_time >= Duration::from_secs(9),
             ":{delivery_time:?}"
@@ -575,7 +548,7 @@ mod tests {
         // Test that cheap items come quickly and expensive items are delayed appropriately
         let stream = stream::iter(vec![1, 5, 1]); // cheap, expensive, cheap
         let limit = Limit::per_second_and_burst(nonzero!(2u32), nonzero!(10u32)); // Enough burst capacity
-        let bucket = TokenBucket::<LocalStorage, _>::with_datum(limit, TokioClock::default());
+        let bucket = empty_bucket(limit);
 
         let mut weighted_stream = std::pin::pin!(WeightedStream::new(stream, bucket, |&item| {
             NonZeroU32::new(item as u32).unwrap_or(nonzero!(1u32))

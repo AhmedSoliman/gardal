@@ -9,11 +9,31 @@ use crate::error::{ExceededBurstCapacity, RateLimited, TryConsumeError};
 use crate::storage::{TimeStorage, TokenAcquisition, TokenBucketStorage};
 use crate::{Clock, Limit, Tokens};
 
-/// The token bucket state, without the clock and the limit.
+/// A token bucket without its clock and limit: only the bucket's state.
 ///
-/// This is the building block behind [`TokenBucket`](crate::TokenBucket). It only stores
-/// the bucket's zero time; the clock and the [`Limit`] are passed to every call. Use it
-/// to embed many buckets that share a clock and a limit without storing them per bucket.
+/// [`TokenBucket`](crate::TokenBucket) bundles a `RawTokenBucket` with a clock and a
+/// [`Limit`]. Use the raw version when you keep many buckets that share the same clock and
+/// limit, for example one bucket per user: each bucket then costs only its state (a single
+/// `f64`), and you pass the clock and the limit to every call.
+///
+/// Always pass the same clock, and the limit the bucket is currently used with. Otherwise the
+/// methods behave like their [`TokenBucket`](crate::TokenBucket) counterparts.
+///
+/// ```rust
+/// use std::collections::HashMap;
+/// use std::num::NonZeroU32;
+///
+/// use gardal::{Limit, LocalStorage, RawTokenBucket, StdClock};
+///
+/// let clock = StdClock;
+/// let limit = Limit::per_second(NonZeroU32::new(5).unwrap());
+/// let mut per_user: HashMap<&str, RawTokenBucket<LocalStorage, StdClock>> = HashMap::new();
+///
+/// let alice = per_user
+///     .entry("alice")
+///     .or_insert_with(|| RawTokenBucket::new(&clock, &limit));
+/// assert!(alice.consume_one(&clock, &limit).is_some());
+/// ```
 #[derive(Clone)]
 pub struct RawTokenBucket<S, C> {
     bucket: TokenBucketStorage<S>,
@@ -29,35 +49,30 @@ impl<S: TimeStorage, C> std::fmt::Debug for RawTokenBucket<S, C> {
 }
 
 impl<S: TimeStorage, C: Clock> RawTokenBucket<S, C> {
-    /// Creates a token bucket from custom storage and clock implementations.
-    ///
-    /// This provides maximum flexibility for advanced use cases requiring specific
-    /// storage strategies or clock implementations.
-    ///
-    /// # Arguments
-    ///
-    /// * `clock` - The clock implementation to use for setting the origin datum time
-    pub fn new(clock: &C) -> Self {
-        let storage = S::new(clock.datum());
-        Self {
-            bucket: TokenBucketStorage::new(storage),
-            _clock: PhantomData,
-        }
+    /// Creates a **full** bucket, like [`TokenBucket::new`](crate::TokenBucket::new).
+    pub fn new(clock: &C, limit: &Limit) -> Self {
+        // As if the bucket had been idle for twice the time it takes to fill up: the balance
+        // is capped at the burst, and the extra margin keeps rounding from leaving the bucket a
+        // hair short of full.
+        Self::with_zero_time(clock.now() - 2.0 * limit.burst / limit.rate)
     }
 
-    /// Returns the internal timepoint of the bucket.
+    /// Creates an **empty** bucket that fills up at the limit's rate, like
+    /// [`TokenBucket::new_empty`](crate::TokenBucket::new_empty).
+    pub fn new_empty(clock: &C) -> Self {
+        Self::with_zero_time(clock.now())
+    }
+
+    /// The bucket's complete state, as a single number.
     ///
-    /// In combination with [`with_zero_time`](Self::with_zero_time), this can be used to
-    /// create a new bucket with a different origin time. For instance, if you'd like
-    /// to reconstruct a bucket with the exact same state as another.
+    /// See [`TokenBucket::get_zero_time`](crate::TokenBucket::get_zero_time).
     pub fn get_zero_time(&self) -> f64 {
         self.bucket.inner.load()
     }
 
-    /// Creates a token bucket whose zero time is `time_point`.
+    /// Creates a bucket from a saved zero time.
     ///
-    /// The zero time is the moment at which the bucket held zero tokens. Pass a value
-    /// obtained from [`get_zero_time`](Self::get_zero_time) to restore a bucket's state.
+    /// Pass a value from [`get_zero_time`](Self::get_zero_time) to restore a bucket.
     pub fn with_zero_time(time_point: f64) -> Self {
         let storage = S::new(time_point);
         Self {
@@ -66,42 +81,27 @@ impl<S: TimeStorage, C: Clock> RawTokenBucket<S, C> {
         }
     }
 
-    /// Updates the rate limit configuration while preserving available tokens.
+    /// Switches the bucket from `current_limit` to `new_limit`, keeping the tokens (or the
+    /// debt) it currently has.
     ///
-    /// The current token balance is maintained proportionally when changing limits.
-    ///
-    /// # Arguments
-    ///
-    /// * `clock` - The clock used originally to create the bucket
-    /// * `limit` - The new rate and burst configuration
-    pub fn reset(&mut self, clock: &C, limit: &Limit) {
+    /// See [`TokenBucket::reset`](crate::TokenBucket::reset). `current_limit` must be the limit
+    /// the bucket was used with until now; it's needed to know how many tokens the bucket holds.
+    pub fn reset(&mut self, clock: &C, current_limit: &Limit, new_limit: &Limit) {
         let now = clock.now();
-        let available = self.bucket.balance(limit.rate, limit.burst, now).max(0.0);
-        self.set_capacity(available, now, limit.rate);
+        let balance = self
+            .bucket
+            .balance(current_limit.rate, current_limit.burst, now);
+        self.set_capacity(balance, now, new_limit.rate);
     }
 
-    /// Set the number of tokens currently available in the bucket.
+    /// Sets the bucket's balance to `tokens` at time `now`.
     pub(crate) fn set_capacity(&mut self, tokens: f64, now: f64, rate: f64) {
         self.bucket.reset(now - tokens / rate);
     }
 
-    /// Attempts to consume exactly the specified number of tokens.
+    /// Takes exactly `to_consume` tokens, or nothing.
     ///
-    /// This is the fastest consumption method. Returns `Some(tokens)` if successful,
-    /// or `None` if insufficient tokens are available.
-    ///
-    /// For wait time estimates when tokens are unavailable, use [`try_consume`](Self::try_consume).
-    ///
-    /// # Arguments
-    ///
-    /// * `to_consume` - Number of tokens to consume
-    /// * `clock` - Clock implementation to use for timing
-    /// * `limit` - Rate and burst configuration for the bucket
-    ///
-    /// # Returns
-    ///
-    /// * `Some(Tokens)` - Successfully consumed tokens
-    /// * `None` - Insufficient tokens available
+    /// See [`TokenBucket::consume`](crate::TokenBucket::consume).
     #[must_use]
     pub fn consume(
         &self,
@@ -119,50 +119,24 @@ impl<S: TimeStorage, C: Clock> RawTokenBucket<S, C> {
         Tokens::new_checked(consumed)
     }
 
-    /// Attempts to consume exactly one token.
-    ///
-    /// Convenience method equivalent to `consume(1)`.
-    ///
-    /// # Returns
-    ///
-    /// * `Some(Tokens)` - Successfully consumed one token
-    /// * `None` - No tokens available
+    /// Takes one token, or nothing. See [`TokenBucket::consume_one`](crate::TokenBucket::consume_one).
     #[must_use]
     pub fn consume_one(&self, clock: &C, limit: &Limit) -> Option<Tokens> {
         self.consume(NonZeroU32::MIN, clock, limit)
     }
 
-    /// Attempts to consume one token with wait time information.
+    /// Takes one token, or returns how long to wait.
     ///
-    /// Convenience method equivalent to `try_consume(1)`.
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(Tokens)` - Successfully consumed one token
-    /// * `Err(RateLimited)` - Rate limited with suggested wait time
+    /// See [`TokenBucket::try_consume_one`](crate::TokenBucket::try_consume_one).
     pub fn try_consume_one(&self, clock: &C, limit: &Limit) -> Result<Tokens, RateLimited> {
         // The burst capacity is always at least one token, so a single token can always
         // be granted eventually.
         self.try_consume_inner(1.0, clock.now(), limit)
     }
 
-    /// Attempts to consume tokens with detailed rate limiting information.
+    /// Takes exactly `to_consume` tokens, or returns how long to wait.
     ///
-    /// Unlike [`consume`](Self::consume), this method provides an estimate of how long
-    /// to wait before retrying when tokens are unavailable.
-    ///
-    /// # Arguments
-    ///
-    /// * `to_consume` - Number of tokens to consume
-    /// * `clock` - Clock implementation to use for timing
-    /// * `limit` - Rate and burst configuration for the bucket
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(Tokens)` - Successfully consumed tokens
-    /// * `Err(TryConsumeError::RateLimited(_))` - Rate limited with suggested retry time
-    /// * `Err(TryConsumeError::ExceededBurstCapacity(_))` - More tokens were requested than
-    ///   the burst capacity, so the request can never succeed
+    /// See [`TokenBucket::try_consume`](crate::TokenBucket::try_consume).
     pub fn try_consume(
         &self,
         to_consume: impl Into<NonZeroU32>,
@@ -206,23 +180,9 @@ impl<S: TimeStorage, C: Clock> RawTokenBucket<S, C> {
         }
     }
 
-    /// Consumes up to the requested number of tokens, returning whatever is available.
+    /// Takes as many whole tokens as the bucket has, up to `to_consume`.
     ///
-    /// This method will consume as many whole tokens as possible up to the requested amount,
-    /// without waiting. A fractional remainder stays in the bucket. Returns `None` if less
-    /// than one token is available.
-    ///
-    /// # Arguments
-    ///
-    /// * `to_consume` - Maximum number of tokens to consume
-    /// * `clock` - Clock implementation to use for timing
-    /// * `limit` - Rate and burst configuration for the bucket
-    ///
-    ///
-    /// # Returns
-    ///
-    /// * `Some(Tokens)` - Number of tokens actually consumed (may be less than requested)
-    /// * `None` - Less than one token available
+    /// See [`TokenBucket::saturating_consume`](crate::TokenBucket::saturating_consume).
     #[must_use]
     pub fn saturating_consume(
         &self,
@@ -239,37 +199,18 @@ impl<S: TimeStorage, C: Clock> RawTokenBucket<S, C> {
         Tokens::new_checked(consumed)
     }
 
-    /// Returns unused tokens to the bucket or manually adds tokens.
+    /// Puts tokens back into the bucket.
     ///
-    /// This operation respects the bucket's burst capacity and will not cause overflow.
-    /// Useful for returning tokens from cancelled operations.
-    ///
-    /// # Arguments
-    ///
-    /// * `tokens` - Number of tokens to add back to the bucket
-    /// * `limit` - Rate and burst configuration for the bucket
+    /// See [`TokenBucket::add_tokens`](crate::TokenBucket::add_tokens).
     pub fn add_tokens(&self, tokens: impl Into<f64>, limit: &Limit) {
         let tokens = tokens.into();
         debug_assert!(tokens > 0.0);
         self.bucket.return_tokens(tokens, limit.rate);
     }
 
-    /// Consumes tokens by borrowing from future capacity.
+    /// Takes `to_consume` tokens, borrowing if needed, and returns how long to wait.
     ///
-    /// This allows consuming more tokens than currently available by going into "debt".
-    /// The bucket will need time to replenish before more tokens can be consumed.
-    ///
-    /// # Arguments
-    ///
-    /// * `to_consume` - Number of tokens to consume
-    /// * `clock` - Clock implementation to use for timing
-    /// * `limit` - Rate and burst configuration for the bucket
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(None)` - Tokens consumed immediately without borrowing
-    /// * `Ok(Some(duration))` - Tokens consumed with borrowing; wait time until debt is paid
-    /// * `Err(ExceededBurstCapacity)` - Cannot borrow more than burst capacity
+    /// See [`TokenBucket::consume_with_borrow`](crate::TokenBucket::consume_with_borrow).
     pub fn consume_with_borrow(
         &self,
         to_consume: impl Into<NonZeroU32>,
@@ -287,22 +228,9 @@ impl<S: TimeStorage, C: Clock> RawTokenBucket<S, C> {
             .map(Duration::from_secs_f64))
     }
 
-    /// Consumes tokens with borrowing, limited to burst capacity.
+    /// Like [`consume_with_borrow`](Self::consume_with_borrow), but caps the request at the burst.
     ///
-    /// Similar to [`consume_with_borrow`](Self::consume_with_borrow) but automatically
-    /// limits the request to the burst capacity instead of returning an error.
-    ///
-    /// # Arguments
-    ///
-    /// * `to_consume` - Number of tokens to consume (capped at burst capacity)
-    /// * `clock` - Clock implementation to use for timing
-    /// * `limit` - Rate and burst configuration for the bucket
-    ///
-    /// # Returns
-    ///
-    /// A tuple of:
-    /// * `Option<Tokens>` - Number of tokens consumed (None if no borrowing occurred)
-    /// * `Duration` - Wait time until the debt is paid (zero if no borrowing)
+    /// See [`TokenBucket::saturating_consume_with_borrow`](crate::TokenBucket::saturating_consume_with_borrow).
     #[must_use]
     pub fn saturating_consume_with_borrow(
         &self,
@@ -339,26 +267,16 @@ impl<S: TimeStorage, C: Clock> RawTokenBucket<S, C> {
             .unwrap_or(0.0)
     }
 
-    /// Returns the number of tokens currently available for consumption.
+    /// The number of tokens that can be taken right now (never negative).
     ///
-    /// This value is always non-negative. If the bucket is in debt from borrowing,
-    /// this returns zero.
-    ///
-    /// # Returns
-    ///
-    /// Number of tokens available for immediate consumption
+    /// See [`TokenBucket::available`](crate::TokenBucket::available).
     pub fn available(&self, clock: &C, limit: &Limit) -> f64 {
         self.balance(clock, limit).max(0.0)
     }
 
-    /// Returns the current token balance, which may be negative if in debt.
+    /// The bucket's balance, negative while in debt.
     ///
-    /// Unlike [`available`](Self::available), this can return negative values
-    /// when tokens have been borrowed from future capacity.
-    ///
-    /// # Returns
-    ///
-    /// Current token balance (negative indicates debt)
+    /// See [`TokenBucket::balance`](crate::TokenBucket::balance).
     pub fn balance(&self, clock: &C, limit: &Limit) -> f64 {
         self.bucket.balance(limit.rate, limit.burst, clock.now())
     }

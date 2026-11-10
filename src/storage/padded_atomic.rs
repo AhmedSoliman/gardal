@@ -5,27 +5,19 @@ use super::TimeStorage;
 use super::atomic::AtomicF64;
 use super::cache_padded::CachePadded;
 
-/// Cache-line padded atomic storage to prevent false sharing.
+/// Thread-safe storage on its own cache line. The default.
 ///
-/// This is the default storage implementation that provides thread-safe access
-/// while avoiding false sharing between CPU cores. The padding ensures that
-/// the atomic variable occupies its own cache line.
-///
-/// # Performance
-///
-/// Offers the best performance for multi-threaded scenarios by preventing
-/// false sharing, which can significantly impact performance when multiple
-/// cores are accessing nearby memory locations.
-///
-/// # Examples
+/// When many threads use a bucket, it helps to keep its state away from unrelated data: CPUs move
+/// memory around in cache lines, and anything sharing the line would slow the bucket down (and be
+/// slowed down by it). The padding costs a cache line of memory (64 to 128 bytes, depending on
+/// the CPU) instead of 8 bytes; see [`AtomicStorage`](crate::AtomicStorage) when that matters.
 ///
 /// ```rust
-/// use gardal::{TokenBucket, Limit, StdClock};
+/// use gardal::{Limit, StdClock, TokenBucket};
 /// use std::num::NonZeroU32;
 ///
-/// // PaddedAtomicStorage is the default storage type
-/// let limit = Limit::per_second(NonZeroU32::new(100).unwrap());
-/// let bucket: TokenBucket = TokenBucket::new(limit, StdClock);
+/// // `TokenBucket` uses `PaddedAtomicStorage` unless told otherwise.
+/// let bucket: TokenBucket = TokenBucket::new(Limit::per_second(NonZeroU32::new(100).unwrap()), StdClock);
 /// ```
 #[derive(Debug)]
 pub struct PaddedAtomicStorage(CachePadded<AtomicF64>);
@@ -51,21 +43,19 @@ impl TimeStorage for PaddedAtomicStorage {
     }
 }
 
-/// Shared, cache-line padded atomic storage.
+/// Thread-safe storage on its own cache line, shared by clones.
 ///
-/// Like [`PaddedAtomicStorage`], but the padded atomic lives behind an [`Arc`], so
-/// cloning a token bucket that uses this storage yields a handle to the *same*
-/// token state. This is the storage used by [`SharedTokenBucket`](crate::SharedTokenBucket).
-///
-/// # Examples
+/// The padded version of [`AtomicSharedStorage`](crate::AtomicSharedStorage), and the storage
+/// behind [`SharedTokenBucket`](crate::SharedTokenBucket): cloning the bucket gives you another
+/// handle to the same tokens.
 ///
 /// ```rust
-/// use gardal::{SharedTokenBucket, Limit, StdClock};
+/// use gardal::{Limit, SharedTokenBucket, StdClock};
 /// use std::num::NonZeroU32;
 ///
-/// let limit = Limit::per_second(NonZeroU32::new(100).unwrap());
-/// let bucket1 = SharedTokenBucket::new(limit, StdClock);
-/// let bucket2 = bucket1.clone(); // Shares the same token state
+/// let bucket = SharedTokenBucket::new(Limit::per_second(NonZeroU32::new(100).unwrap()), StdClock);
+/// let handle = bucket.clone(); // same tokens, usable from another thread
+/// std::thread::spawn(move || handle.consume_one()).join().unwrap();
 /// ```
 #[derive(Debug, Clone)]
 pub struct PaddedAtomicSharedStorage(Arc<CachePadded<AtomicF64>>);
